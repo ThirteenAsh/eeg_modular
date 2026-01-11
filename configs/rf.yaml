@@ -1,0 +1,34 @@
+# RandomForest experiment
+seed: 42
+data_dir: ./data
+emotions: [happy, sad, normal]
+
+split:
+  test_size: 0.30
+  val_size: 0.10
+  random_state: 42
+
+preprocess:
+  impute_strategy: mean
+  scale: true
+  select_k_best: null
+  pca_n_components: null
+  augment: true
+  noise_std: 0.01
+  time_jitter: 0.02
+
+model:
+  type: rf
+  cv: 5
+  n_jobs: -1
+  random_state: 42
+  param_grid:
+    n_estimators: [200, 500, 800]
+    max_depth: [null, 10, 20, 40]
+    min_samples_split: [2, 5, 10]
+    min_samples_leaf: [1, 2, 4]
+    bootstrap: [true, false]
+
+output:
+  base_dir: outputs
+  # run_name: rf_grid
