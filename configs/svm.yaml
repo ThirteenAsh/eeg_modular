@@ -1,0 +1,36 @@
+# Baseline SVM experiment
+seed: 42
+data_dir: ./data
+emotions: [happy, sad, normal]
+
+# optional override; default is the standard 7 csvs
+# csv_files: [att.csv, med.csv, powerspec.csv, combined.csv, filtered.csv, rawwave.csv, sigqual.csv]
+
+split:
+  test_size: 0.30
+  val_size: 0.10
+  random_state: 42
+
+preprocess:
+  impute_strategy: mean
+  scale: true
+  select_k_best: null
+  pca_n_components: null
+  augment: true
+  noise_std: 0.01
+  time_jitter: 0.02
+
+model:
+  type: svm
+  cv: 5
+  n_jobs: -1
+  probability: true
+  param_grid:
+    C: [0.1, 1, 10]
+    gamma: [scale, auto]
+    kernel: [rbf, poly, sigmoid]
+    class_weight: [null, balanced]
+
+output:
+  base_dir: outputs
+  # run_name: svm_baseline

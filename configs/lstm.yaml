@@ -1,0 +1,71 @@
+# LSTM pipeline migrated from train_lstm.py (config-driven)
+seed: 42
+
+output:
+  base_dir: outputs
+  # run_name: lstm_step6
+
+data_dir: ./data
+emotions: [happy, sad, normal]
+csv_files: [att.csv, med.csv, powerspec.csv, combined.csv, filtered.csv, rawwave.csv, sigqual.csv]
+time_steps: 128
+min_cols_per_file: 10
+
+split:
+  test_size: 0.30
+  seed: 42
+
+augment:
+  enabled: true
+  sad_times: 3
+  other_times: 3
+
+preprocess:
+  impute_strategy: mean
+  scale: true
+  pca_n_components: 64
+
+autoencoder:
+  epochs: 100
+  batch_size: 32
+  val_split: 0.10
+  latent_dim: 128
+  dropout_rate: 0.2
+  lr: 0.001
+  lr_patience: 8
+  early_stop_patience: 20
+  min_lr: 1e-6
+
+sample_stats:
+  enabled: true
+
+mixup:
+  enabled: true
+  alpha: 0.3
+  augment_ratio: 1.0
+
+classifier:
+  epochs: 200
+  batch_size: 8
+  val_split: 0.20
+  initial_lr: 0.001
+  use_cosine_decay: true
+  lr_patience: 10
+  early_stop_patience: 30
+  min_lr: 1e-6
+
+viz:
+  seaborn_confusion_matrix: true  
+  umap_svm_boundary: true         
+  umap:
+    n_neighbors: 15
+    min_dist: 0.1
+    metric: euclidean
+    random_state: 42
+    grid_res: 600
+    margin: 0.5
+    svm_kernel: rbf
+    svm_C: 10.0
+    svm_gamma: scale
+    mode: both
+    alpha: 0.25

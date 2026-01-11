@@ -1,0 +1,47 @@
+seed: 42
+
+output:
+  base_dir: outputs
+  # run_name: cnn_step6
+
+cnn:
+  framework: torch
+  data_dir: ./features
+  modalities: [filtered, powerspec, att, med]
+
+  input:
+    time_steps: 10
+    feat_dim: 4
+
+  dropout: 0.5
+
+  # ===== Step6: CVAE integration =====
+  cvae:
+    enabled: true
+    checkpoint: ./cvae_best_model.pth   # 改成你的路径
+    py_path: eeg_emotion/models/torch/cvae_model.py
+    latent_dim: 64
+    strict: false
+
+  # ===== Loss =====
+  loss:
+    focal_gamma: 2.0
+
+  # ===== Class weight (manual boost Sad) =====
+  class_weight:
+    sad_multiplier: 3.0
+
+  # ===== Scheduler =====
+  scheduler:
+    T_0: 10
+    T_mult: 2
+    eta_min: 1e-6
+
+  train:
+    epochs: 200
+    batch_size: 32
+    lr: 0.001
+    weight_decay: 0.001
+    n_splits: 5
+    use_amp: false
+    log_every: 10
