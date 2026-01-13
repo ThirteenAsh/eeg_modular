@@ -15,10 +15,10 @@ cnn:
 
   dropout: 0.5
 
-  # ===== Step6: CVAE integration =====
+  # ===== CVAE integration =====
   cvae:
     enabled: true
-    checkpoint: ./cvae_best_model.pth   # 改成你的路径
+    checkpoint: eeg_emotion/models/torch/cvae_best_model.pth
     py_path: eeg_emotion/models/torch/cvae_model.py
     latent_dim: 64
     strict: false
