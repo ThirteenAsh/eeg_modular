@@ -2,7 +2,6 @@ seed: 42
 
 output:
   base_dir: outputs
-  # run_name: cnn_step6
 
 cnn:
   framework: torch
