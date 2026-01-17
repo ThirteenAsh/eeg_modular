@@ -217,7 +217,7 @@ python -m scripts.train_lstm_dl -c configs/lstm.yaml
 - 每个实验一个 yaml（比如 `svm_baseline.yaml`, `mlp_kbest_500.yaml`）
 - yaml 里不要写绝对路径（除非团队机器差异太大），尽量用相对路径或在 README 指定目录结构
 
-典型配置字段（示例思想）：
+典型配置字段：
 - output.base_dir / output.run_name
 - data_dir / emotions / csv_files
 - preprocess.xxx
@@ -254,8 +254,7 @@ loader 会尽量规范到 (N,T,F)（例如自动把 (N,F,T) 转置），但如�
 ## 8. 团队协作建议
 
 - 在仓库根目录提供：
-  - `ENGINEERING_GUIDE.md`（本文）
-  - `CHANGES_SUMMARY.md`（你这次重构做了哪些变更）
+  - `ENGINEERINREAD_GUIDE.md`（本文）
 - 约定所有实验 run 都输出到 `outputs/`（但不要把 outputs 提交到 git；用 .gitignore）
 - 每次新增模型/功能：
   - 新增模块文件
