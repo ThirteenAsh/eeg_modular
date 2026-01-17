@@ -14,10 +14,14 @@ from tensorflow.keras.models import Model
 
 from eeg_emotion.config.loader import load_config, require, get
 from eeg_emotion.features.sequence.extract import SequenceFeatureConfig, extract_all_features
-from eeg_emotion.features.sequence.augment import augment_class_samples, mixup_augment, compute_sample_stats
+from eeg_emotion.features.sequence.augment import (
+    augment_class_samples, mixup_augment, compute_sample_stats, apply_gaussian_noise_batch
+)
 from eeg_emotion.preprocess.sequence import SequencePreprocessConfig, SequencePreprocessor
 from eeg_emotion.models.tf.lstm_ae import LSTMAEConfig, build_lstm_autoencoder
-from eeg_emotion.models.tf.lstm_clf import build_lstm_classifier
+from eeg_emotion.models.tf.lstm_clf import (
+    build_encoded_mlp_classifier, build_sequence_bilstm_classifier, BiLSTMClassifierConfig
+)
 from eeg_emotion.train.metrics import classification_metrics
 from eeg_emotion.utils.logging import setup_logging
 from eeg_emotion.utils.paths import make_run_paths
@@ -70,13 +74,11 @@ def main():
     run = make_run_paths(base_dir=str(out_cfg.get("base_dir", "outputs")), run_name=out_cfg.get("run_name"))
     logger = setup_logging(os.path.join(run.logs_dir, "train.log"))
 
-    # ---------------- config ----------------
     data_dir = str(require(cfg, "data_dir", str))
     emotions = require(cfg, "emotions", list)
     csv_files = require(cfg, "csv_files", list)
     time_steps = int(get(cfg, "time_steps", 128))
 
-    # feature extraction
     X, y = extract_all_features(SequenceFeatureConfig(
         data_dir=data_dir,
         emotions=list(emotions),
@@ -86,7 +88,6 @@ def main():
     ))
     logger.info("Extracted X=%s y=%s labels=%s", X.shape, y.shape, dict(Counter(y)))
 
-    # split first (strict: augment only on train)
     split_cfg = get(cfg, "split", {})
     test_size = float(split_cfg.get("test_size", 0.30))
     seed = int(split_cfg.get("seed", 42))
@@ -95,16 +96,28 @@ def main():
     )
     logger.info("Split train=%s test=%s", X_train.shape, X_test.shape)
 
-    # class-level augmentation (train only)
     aug_cfg = get(cfg, "augment", {})
+    aug_noise = get(aug_cfg, "noise", {}) or {}
+    noise_mean = float(aug_noise.get("mean", 0.0))
+    noise_std = float(aug_noise.get("std", 0.01))
+
     if bool(aug_cfg.get("enabled", True)):
         sad_times = int(aug_cfg.get("sad_times", 3))
         other_times = int(aug_cfg.get("other_times", 3))
-        X_train, y_train = augment_class_samples(X_train, y_train, target_labels=[1], augment_times=sad_times)
-        X_train, y_train = augment_class_samples(X_train, y_train, target_labels=[0, 2], augment_times=other_times)
+        X_train, y_train = augment_class_samples(
+            X_train, y_train, target_labels=[1],
+            augment_times=sad_times,
+            noise_mean=noise_mean,
+            noise_std=noise_std,
+        )
+        X_train, y_train = augment_class_samples(
+            X_train, y_train, target_labels=[0, 2],
+            augment_times=other_times,
+            noise_mean=noise_mean,
+            noise_std=noise_std,
+        )
         logger.info("After train-only augmentation labels=%s", dict(Counter(y_train)))
 
-    # preprocess (fit on train, transform test)
     pp_cfg = get(cfg, "preprocess", {})
     pp = SequencePreprocessor(SequencePreprocessConfig(
         impute_strategy=str(pp_cfg.get("impute_strategy", "mean")),
@@ -116,18 +129,43 @@ def main():
     pp.save(run.artifacts_dir)
     logger.info("After preprocess train=%s test=%s", X_train.shape, X_test.shape)
 
-    # one-hot labels for classifier
     num_classes = len(emotions)
     y_train_cat = tf.keras.utils.to_categorical(y_train, num_classes=num_classes)
 
-    # ---------------- autoencoder pretrain ----------------
+    # Gaussian noise injection (train-only, after preprocess)
+    noise_cfg = get(cfg, "gaussian_noise", {}) or {}
+    noise_enabled = bool(noise_cfg.get("enabled", False))
+    noise_apply_to = set(noise_cfg.get("apply_to", ["ae", "clf"]))
+    noise_mean2 = float(noise_cfg.get("mean", 0.0))
+    noise_std2 = float(noise_cfg.get("std", 0.01))
+
+    X_train_for_ae = X_train
+    X_train_for_clf_seq = X_train
+    if noise_enabled and noise_std2 > 0:
+        if "ae" in noise_apply_to:
+            X_train_for_ae = apply_gaussian_noise_batch(X_train_for_ae, mean=noise_mean2, std=noise_std2)
+        if "clf" in noise_apply_to:
+            X_train_for_clf_seq = apply_gaussian_noise_batch(X_train_for_clf_seq, mean=noise_mean2, std=noise_std2)
+        logger.info("Applied gaussian noise: mean=%.4f std=%.4f apply_to=%s", noise_mean2, noise_std2, sorted(list(noise_apply_to)))
+
+    # AE (BiLSTM + configurable dropout)
     ae_cfg = get(cfg, "autoencoder", {})
     ae_epochs = int(ae_cfg.get("epochs", 100))
     latent_dim = int(ae_cfg.get("latent_dim", 128))
-    ae_dropout = float(ae_cfg.get("dropout_rate", 0.2))
-    ae_lr = float(ae_cfg.get("lr", 1e-3))
 
-    autoencoder = build_lstm_autoencoder((time_steps, X_train.shape[2]), LSTMAEConfig(latent_dim=latent_dim, dropout_rate=ae_dropout, lr=ae_lr))
+    autoencoder = build_lstm_autoencoder(
+        (time_steps, X_train_for_ae.shape[2]),
+        LSTMAEConfig(
+            latent_dim=latent_dim,
+            enc_units=ae_cfg.get("enc_units"),
+            enc_layers=int(ae_cfg.get("enc_layers", 2)),
+            enc_dropout=float(ae_cfg.get("enc_dropout", ae_cfg.get("dropout_rate", 0.2))),
+            use_bidirectional_decoder=bool(ae_cfg.get("use_bidirectional_decoder", True)),
+            dec_units=ae_cfg.get("dec_units"),
+            dec_dropout=float(ae_cfg.get("dec_dropout", ae_cfg.get("dropout_rate", 0.2))),
+            lr=float(ae_cfg.get("lr", 1e-3)),
+        )
+    )
 
     ae_callbacks = [
         ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=int(ae_cfg.get("lr_patience", 8)), min_lr=float(ae_cfg.get("min_lr", 1e-6)), verbose=1),
@@ -137,7 +175,7 @@ def main():
 
     logger.info("Training AE...")
     history_ae = autoencoder.fit(
-        X_train, X_train,
+        X_train_for_ae, X_train_for_ae,
         epochs=ae_epochs,
         batch_size=int(ae_cfg.get("batch_size", 32)),
         validation_split=float(ae_cfg.get("val_split", 0.1)),
@@ -147,37 +185,26 @@ def main():
     plot_training_curves(history_ae, os.path.join(run.figures_dir, "training_curves_ae.png"))
 
     encoder_model = Model(inputs=autoencoder.input, outputs=autoencoder.get_layer("encoder_output").output)
-    encoder_path = os.path.join(run.models_dir, "trained_encoder.keras")
-    encoder_model.save(encoder_path)
+    encoder_model.save(os.path.join(run.models_dir, "trained_encoder.keras"))
 
     X_train_enc = encoder_model.predict(X_train, verbose=0)
     X_test_enc = encoder_model.predict(X_test, verbose=0)
 
-    # append per-sample stats
     stats_cfg = get(cfg, "sample_stats", {})
     if bool(stats_cfg.get("enabled", True)):
         X_train_enc = np.concatenate([X_train_enc, compute_sample_stats(X_train)], axis=1)
         X_test_enc = np.concatenate([X_test_enc, compute_sample_stats(X_test)], axis=1)
 
-    # ---------------- mixup (encoded features) ----------------
-    mix_cfg = get(cfg, "mixup", {})
-    mix_ratio = float(mix_cfg.get("augment_ratio", 1.0))
-    mix_alpha = float(mix_cfg.get("alpha", 0.3))
-    if bool(mix_cfg.get("enabled", True)) and mix_ratio > 0:
-        X_train_enc, y_train_cat = mixup_augment(X_train_enc, y_train_cat, alpha=mix_alpha, augment_ratio=mix_ratio)
-        logger.info("After mixup X=%s y=%s", X_train_enc.shape, y_train_cat.shape)
-
-    # ---------------- classifier ----------------
+    # Classifier: BiLSTM (sequence) OR MLP (encoded)
     clf_cfg = get(cfg, "classifier", {})
+    clf_mode = str(clf_cfg.get("mode", "bilstm")).lower()
     clf_epochs = int(clf_cfg.get("epochs", 200))
-    clf_batch = int(clf_cfg.get("batch_size", 8))
+    clf_batch = int(clf_cfg.get("batch_size", 16))
     initial_lr = float(clf_cfg.get("initial_lr", 1e-3))
-
-    # If you use a LearningRateSchedule (CosineDecay), you must NOT use ReduceLROnPlateau.
     use_cosine_decay = bool(clf_cfg.get("use_cosine_decay", True))
 
     if use_cosine_decay:
-        steps_per_epoch = max(1, int(np.ceil(X_train_enc.shape[0] / clf_batch)))
+        steps_per_epoch = max(1, int(np.ceil((X_train_for_clf_seq.shape[0] if clf_mode == "bilstm" else X_train_enc.shape[0]) / clf_batch)))
         decay_steps = int(clf_epochs * steps_per_epoch)
         lr = tf.keras.optimizers.schedules.CosineDecay(initial_learning_rate=initial_lr, decay_steps=decay_steps)
         lr_is_schedule = True
@@ -185,9 +212,37 @@ def main():
         lr = initial_lr
         lr_is_schedule = False
 
-    classifier = build_lstm_classifier(X_train_enc.shape[1], num_classes, lr=lr)
+    mix_cfg = get(cfg, "mixup", {}) or {}
+    mix_ratio = float(mix_cfg.get("augment_ratio", 1.0))
+    mix_alpha = float(mix_cfg.get("alpha", 0.3))
+    use_mixup = bool(mix_cfg.get("enabled", True)) and mix_ratio > 0
 
-    use_class_weight = (not bool(mix_cfg.get("enabled", True))) or float(mix_cfg.get("augment_ratio", 0)) == 0
+    if clf_mode == "bilstm":
+        bilstm_cfg = BiLSTMClassifierConfig(
+            lstm_units=int(clf_cfg.get("lstm_units", 128)),
+            num_layers=int(clf_cfg.get("num_layers", 2)),
+            dropout=float(clf_cfg.get("dropout", 0.3)),
+            recurrent_dropout=float(clf_cfg.get("recurrent_dropout", 0.0)),
+            pooling=str(clf_cfg.get("pooling", "avgmax")),
+            label_smoothing=float(clf_cfg.get("label_smoothing", 0.05)),
+        )
+        Xtr, Ytr = X_train_for_clf_seq, y_train_cat
+        if use_mixup:
+            Xtr, Ytr = mixup_augment(Xtr, Ytr, alpha=mix_alpha, augment_ratio=mix_ratio)
+            logger.info("After mixup (seq) X=%s y=%s", Xtr.shape, Ytr.shape)
+        classifier = build_sequence_bilstm_classifier((time_steps, X_train_for_clf_seq.shape[2]), num_classes, lr=lr, cfg=bilstm_cfg)
+        X_test_input = X_test
+        y_eval = y_test
+    else:
+        Xtr, Ytr = X_train_enc, y_train_cat
+        if use_mixup:
+            Xtr, Ytr = mixup_augment(Xtr, Ytr, alpha=mix_alpha, augment_ratio=mix_ratio)
+            logger.info("After mixup (enc) X=%s y=%s", Xtr.shape, Ytr.shape)
+        classifier = build_encoded_mlp_classifier(X_train_enc.shape[1], num_classes, lr=lr)
+        X_test_input = X_test_enc
+        y_eval = y_test
+
+    use_class_weight = (not use_mixup) or float(mix_cfg.get("augment_ratio", 0)) == 0
     class_weight_dict = None
     if use_class_weight:
         cw = compute_class_weight("balanced", classes=np.unique(y_train), y=y_train)
@@ -206,9 +261,9 @@ def main():
             verbose=1,
         ))
 
-    logger.info("Training classifier... (use_cosine_decay=%s)", use_cosine_decay)
+    logger.info("Training classifier... mode=%s use_cosine_decay=%s", clf_mode, use_cosine_decay)
     history_clf = classifier.fit(
-        X_train_enc, y_train_cat,
+        Xtr, Ytr,
         validation_split=float(clf_cfg.get("val_split", 0.2)),
         epochs=clf_epochs,
         batch_size=clf_batch,
@@ -219,14 +274,13 @@ def main():
     plot_training_curves(history_clf, os.path.join(run.figures_dir, "training_curves_clf.png"))
 
     classifier.load_weights(os.path.join(run.models_dir, "best_classifier.weights.h5"))
-    y_pred = np.argmax(classifier.predict(X_test_enc, verbose=0), axis=1)
+    y_pred = np.argmax(classifier.predict(X_test_input, verbose=0), axis=1)
 
-    m = classification_metrics(y_test, y_pred, class_names=list(emotions))
+    m = classification_metrics(y_eval, y_pred, class_names=list(emotions))
     logger.info("Test accuracy: %.4f", m["accuracy"])
 
-    # Existing (matplotlib) confusion matrix
     save_confusion_matrix(
-        y_true=y_test,
+        y_true=y_eval,
         y_pred=y_pred,
         class_names=list(emotions),
         save_path=os.path.join(run.figures_dir, "confusion_matrix.png"),
@@ -234,63 +288,18 @@ def main():
         title="Confusion Matrix (Normalized)",
     )
 
-    # ---------------- Optional viz: seaborn CM + UMAP+SVM boundary ----------------
-    viz_cfg = get(cfg, "viz", {}) or {}
-
-    if bool(viz_cfg.get("seaborn_confusion_matrix", True)):
-        try:
-            from eeg_emotion.viz.seaborn_cm import save_confusion_matrix_seaborn
-            save_confusion_matrix_seaborn(
-                y_true=y_test,
-                y_pred=y_pred,
-                class_names=list(emotions),
-                save_path=os.path.join(run.figures_dir, "confusion_matrix_seaborn.png"),
-                normalize=None,
-                title="Confusion Matrix (Seaborn)",
-            )
-            logger.info("Saved seaborn confusion matrix.")
-        except Exception as e:
-            logger.warning("Skip seaborn confusion matrix (missing deps or error): %s", e)
-
-    if bool(viz_cfg.get("umap_svm_boundary", True)):
-        try:
-            from eeg_emotion.viz.umap_boundary import save_umap_svm_decision_boundary, UMAPBoundaryConfig
-            uc = viz_cfg.get("umap", {}) or {}
-            umap_cfg = UMAPBoundaryConfig(
-                n_neighbors=int(uc.get("n_neighbors", 15)),
-                min_dist=float(uc.get("min_dist", 0.1)),
-                metric=str(uc.get("metric", "euclidean")),
-                random_state=int(uc.get("random_state", 42)),
-                grid_res=int(uc.get("grid_res", 600)),
-                margin=float(uc.get("margin", 0.5)),
-                svm_kernel=str(uc.get("svm_kernel", "rbf")),
-                svm_C=float(uc.get("svm_C", 10.0)),
-                svm_gamma=str(uc.get("svm_gamma", "scale")),
-                mode=str(uc.get("mode", "both")),
-                alpha=float(uc.get("alpha", 0.25)),
-            )
-            save_umap_svm_decision_boundary(
-                X=X_test_enc,
-                y=y_test,
-                class_names=list(emotions),
-                save_path=os.path.join(run.figures_dir, "umap_test_boundary_true.png"),
-                cfg=umap_cfg,
-                title="UMAP Projection with Decision Boundary (Test Set)",
-            )
-            logger.info("Saved UMAP+SVM decision boundary plot.")
-        except Exception as e:
-            logger.warning("Skip UMAP boundary (missing deps or error): %s", e)
-
     out = {
         "accuracy": m["accuracy"],
         "report": m["report"],
         "best_params": {
+            "classifier_mode": clf_mode,
             "time_steps": time_steps,
             "latent_dim": latent_dim,
             "pca_n_components": pp_cfg.get("pca_n_components", 64),
             "mixup_alpha": mix_alpha,
             "mixup_ratio": mix_ratio,
             "augment": bool(aug_cfg.get("enabled", True)),
+            "gaussian_noise": {"enabled": noise_enabled, "apply_to": sorted(list(noise_apply_to)), "std": noise_std2},
             "use_cosine_decay": use_cosine_decay,
         },
         "config_path": os.path.abspath(args.config),
