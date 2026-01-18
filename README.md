@@ -162,11 +162,11 @@ outputs/
 python -m scripts.train -c configs/svm.yaml    # 或 configs/<svm_or_mlp_or_rf>.yaml
 ```
 
+**SVM 三项常用改动**
 
-**SVM 三项常用改动（你们最常用）**
-- 归一化：在 yaml 里开 `preprocess.scale: true` 并选 `preprocess.scaler: standard|minmax|robust`
-- 核函数：`model.svm.kernel: rbf|poly|linear|sigmoid`，配套 `C/gamma/degree/coef0`
-- “凸优化/求解稳定性”：SVM 本身就是凸优化；工程里提供 `solver: svc|linearsvc` + `max_iter/tol` 控制收敛与稳定性
+* **归一化（Normalization）**：在 YAML 中启用 `preprocess.scale: true`，并选择 `preprocess.scaler: standard | minmax | robust`。
+* **核函数（Kernel）**：通过 `model.svm.kernel: rbf | poly | linear | sigmoid` 切换核类型，并按需设置 `C / gamma / degree / coef0` 等超参。
+* **“凸优化 / 求解稳定性”**：SVM 本质是凸优化问题；工程层面主要通过选择求解后端 `solver: svc | linearsvc`，以及调节 `max_iter / tol` 来控制收敛速度与训练稳定性。
 
 你要新增一个 sklearn 模型：
 - 在 `eeg_emotion/models/sklearn/` 里新增 `<model>.py`，实现统一接口（fit/predict/save/load）
