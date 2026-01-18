@@ -76,3 +76,8 @@ classifier:
   recurrent_dropout: 0.0
   pooling: avgmax
   label_smoothing: 0.05
+
+# 可视化配置
+viz:
+  seaborn_confusion_matrix: true  # 使用matplotlib风格的混淆矩阵
+  umap_boundary: false  # 默认关闭单个模型的UMAP生成
