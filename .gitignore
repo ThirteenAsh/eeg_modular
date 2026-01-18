@@ -1,5 +1,4 @@
 # Ignore generated feature files and outputs
-/features/
 /outputs/
 __pycache__/
 *.pyc
