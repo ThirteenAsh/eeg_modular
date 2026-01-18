@@ -46,7 +46,7 @@ pip install -U seaborn umap-learn   # 可选
 
 1) 训练 sklearn（统计特征 tabular 路线）
 ```bash
-python -m scripts.train -c configs/<your_sklearn_config>.yaml
+python -m scripts.train -c configs/svm.yaml    # 或 configs/<your_sklearn_config>.yaml
 ```
 
 2) 训练 CNN（torch，多模态 + 可选 CVAE）
@@ -83,7 +83,7 @@ eeg_emotion/
     sequence.py             # sequence 预处理：impute/scale/(可选)PCA（按时间步 reshape）
   models/
     sklearn/
-      svm.py                # SVM adapter
+      svm.py                # SVM adapter（SVC/LinearSVC 两种凸优化后端，支持核函数切换）
       mlp.py                # MLP adapter
       rf.py                 # RandomForest adapter
     torch/
@@ -91,7 +91,7 @@ eeg_emotion/
       cvae.py               # CVAE 动态加载（checkpoint 兼容）
     tf/
       lstm_ae.py            # LSTM AutoEncoder（attention）
-      lstm_clf.py           # 编码后分类器（MLP）
+      lstm_clf.py           # 分类器：支持 encoded-MLP 或 sequence-BiLSTM（可切换）
   dl/
     common.py               # 通用：seed 等
     torch/
@@ -118,6 +118,7 @@ scripts/
   compare_runs.py           # 扫描 outputs/*/metrics.json 自动汇总
 
 configs/
+  svm.yaml                  # SVM 配置模板（归一化/核函数/求解器）
   cnn.yaml                  # CNN 配置模板
   lstm.yaml                 # LSTM 配置模板
   *.yaml                    # sklearn 侧各种实验配置（你们后续自己维护）
@@ -158,8 +159,14 @@ outputs/
 
 运行：
 ```bash
-python -m scripts.train -c configs/<svm_or_mlp_or_rf>.yaml
+python -m scripts.train -c configs/svm.yaml    # 或 configs/<svm_or_mlp_or_rf>.yaml
 ```
+
+**SVM 三项常用改动**
+
+* **归一化（Normalization）**：在 YAML 中启用 `preprocess.scale: true`，并选择 `preprocess.scaler: standard | minmax | robust`。
+* **核函数（Kernel）**：通过 `model.svm.kernel: rbf | poly | linear | sigmoid` 切换核类型，并按需设置 `C / gamma / degree / coef0` 等超参。
+* **“凸优化 / 求解稳定性”**：SVM 本质是凸优化问题；工程层面主要通过选择求解后端 `solver: svc | linearsvc`，以及调节 `max_iter / tol` 来控制收敛速度与训练稳定性。
 
 你要新增一个 sklearn 模型：
 - 在 `eeg_emotion/models/sklearn/` 里新增 `<model>.py`，实现统一接口（fit/predict/save/load）
@@ -197,13 +204,17 @@ python -m scripts.train_lstm_dl -c configs/lstm.yaml
 ```
 
 关键参数都在 `configs/lstm.yaml`：
+- `gaussian_noise`：训练集输入高斯噪声注入（可指定对 AE/Classifier 生效，train-only）
+
 - `csv_files`：每个 sample 文件夹里希望读取的 csv 列表
 - `time_steps`：序列统一长度（不足 padding，过长截断）
 - `augment`：按类增强次数（train-only）
 - `preprocess`：impute/scale/PCA（按每个时间步进行 reshape 处理）
 - `autoencoder`：AE 训练参数
 - `mixup`：在 encoded features 上做 mixup
-- `classifier`：分类器训练参数 + 学习率策略
+- `classifier`：分类器训练参数 + 学习率策略（`classifier.mode: bilstm|mlp`）
+  - `bilstm`：Classifier 直接吃序列 (T,F) 做 BiLSTM 分类（同时支持 Dropout）
+  - `mlp`：Classifier 吃 encoder 输出向量做 MLP 分类（旧路线）
 
 可视化（可选）：
 - `viz.seaborn_confusion_matrix: true` -> 输出 seaborn 混淆矩阵
@@ -235,6 +246,8 @@ python -m scripts.train_lstm_dl -c configs/lstm.yaml
 ### 7.1 LSTM：LearningRateSchedule + ReduceLROnPlateau 冲突
 如果 classifier 使用 `CosineDecay` 等 schedule，就不能再用 ReduceLROnPlateau（它会尝试 set lr）。
 工程已做了保护：当 `use_cosine_decay=true` 会自动不启用 ReduceLROnPlateau。
+
+补充：Classifier 支持 `classifier.mode: bilstm|mlp`；其中 `bilstm` 直接对序列做分类，适合你要的“BiLSTM 用到过去+未来上下文”的场景。
 
 ### 7.2 缺 seaborn / umap-learn
 会在日志提示“跳过”，但训练仍正常完成。要生成对应图再安装：

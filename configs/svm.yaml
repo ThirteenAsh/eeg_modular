@@ -1,4 +1,4 @@
-# Baseline SVM experiment
+# Baseline SVM experiment (optimized but schema-compatible)
 seed: 42
 data_dir: ./data
 emotions: [happy, sad, normal]
@@ -13,7 +13,7 @@ split:
 
 preprocess:
   impute_strategy: mean
-  scale: true
+  scale: true                # ✅ 1) 归一化（仍然由 pipeline 里的 scaler 做）
   select_k_best: null
   pca_n_components: null
   augment: true
@@ -24,12 +24,18 @@ model:
   type: svm
   cv: 5
   n_jobs: -1
-  probability: true
+  probability: true          # SVC(proba) 需要这个；你原来就是 true
   param_grid:
+    # ✅ 2) 改核函数：直接改这里
+    kernel: [rbf, poly, sigmoid, linear]
+
     C: [0.1, 1, 10]
-    gamma: [scale, auto]
-    kernel: [rbf, poly, sigmoid]
+    gamma: [scale, auto]     # rbf/poly/sigmoid 用到；linear 时会被忽略
     class_weight: [null, balanced]
+
+    # ✅ 3) “凸优化/稳定性”：SVM本质凸优化；工程可控的是求解收敛与迭代
+    tol: [0.001, 0.0005]
+    max_iter: [-1, 20000]    # -1=不限制；不稳定时试 20000
 
 output:
   base_dir: outputs
