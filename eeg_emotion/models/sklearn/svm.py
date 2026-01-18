@@ -131,3 +131,4 @@ def from_dict(d: Dict[str, Any]) -> SVMConfig:
         fit_intercept=bool(d.get("fit_intercept", True)),
         intercept_scaling=float(d.get("intercept_scaling", 1.0)),
     )
+SVMClassifier = SVMModel

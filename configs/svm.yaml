@@ -1,42 +1,42 @@
-# SVM baseline config (tabular features)
-# ✅ 1) 归一化：preprocess.scale = true + scaler=standard
-# ✅ 2) 改核函数：model.svm.kernel = rbf/poly/linear/sigmoid
-# ✅ 3) 凸优化：SVM 本质就是凸优化；这里提供 max_iter/tol + solver(linearsvc) 控制求解稳定性
+# Baseline SVM experiment (optimized but schema-compatible)
+seed: 42
+data_dir: ./data
+emotions: [happy, sad, normal]
 
-output:
-  base_dir: outputs
-  run_name: svm_rbf_scaled
+# optional override; default is the standard 7 csvs
+# csv_files: [att.csv, med.csv, powerspec.csv, combined.csv, filtered.csv, rawwave.csv, sigqual.csv]
 
-data:
-  data_dir: ./data
+split:
+  test_size: 0.30
+  val_size: 0.10
+  random_state: 42
 
 preprocess:
   impute_strategy: mean
-  scale: true
-  scaler: standard      # standard|minmax|robust
+  scale: true                # ✅ 1) 归一化（仍然由 pipeline 里的 scaler 做）
+  select_k_best: null
   pca_n_components: null
+  augment: true
+  noise_std: 0.01
+  time_jitter: 0.02
 
 model:
-  name: svm
-  svm:
-    # solver: svc 支持核函数；linearsvc 更快但只能线性
-    solver: svc
+  type: svm
+  cv: 5
+  n_jobs: -1
+  probability: true          # SVC(proba) 需要这个；你原来就是 true
+  param_grid:
+    # ✅ 2) 改核函数：直接改这里
+    kernel: [rbf, poly, sigmoid, linear]
 
-    # ----- kernel params (SVC) -----
-    kernel: rbf          # linear | rbf | poly | sigmoid
-    C: 1.0
-    gamma: scale         # scale | auto | float
-    degree: 3            # poly 才会用到
-    coef0: 0.0           # poly/sigmoid 才会用到
-    shrinking: true
-    probability: false
-    cache_size: 1024
+    C: [0.1, 1, 10]
+    gamma: [scale, auto]     # rbf/poly/sigmoid 用到；linear 时会被忽略
+    class_weight: [null, balanced]
 
-    # ----- convex optimization controls -----
-    max_iter: -1         # -1 表示不限制；必要时可设 20000
-    tol: 0.001
-    class_weight: balanced
+    # ✅ 3) “凸优化/稳定性”：SVM本质凸优化；工程可控的是求解收敛与迭代
+    tol: [0.001, 0.0005]
+    max_iter: [-1, 20000]    # -1=不限制；不稳定时试 20000
 
-train:
-  # 如果你们有 GridSearch / CV 配置，这里可接入
-  use_grid_search: false
+output:
+  base_dir: outputs
+  # run_name: svm_baseline

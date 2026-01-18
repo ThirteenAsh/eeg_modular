@@ -13,7 +13,11 @@ from eeg_emotion.config.loader import ConfigError, load_config, get, require
 from eeg_emotion.features.csv_stats import DEFAULT_CSV_FILES, build_tabular_dataset
 from eeg_emotion.models.sklearn.mlp import MLPAdapter, MLPConfig
 from eeg_emotion.models.sklearn.rf import RFAdapter, RFConfig
-from eeg_emotion.models.sklearn.svm import SVMClassifier, SVMConfig
+from sklearn.model_selection import GridSearchCV
+import joblib
+
+from eeg_emotion.models.sklearn.svm import SVMModel, from_dict
+
 from eeg_emotion.preprocess.tabular import TabularPreprocessConfig, TabularPreprocessor
 from eeg_emotion.train.metrics import classification_metrics
 from eeg_emotion.utils.logging import setup_logging
@@ -21,22 +25,72 @@ from eeg_emotion.utils.paths import make_run_paths
 from eeg_emotion.utils.seed import set_seed
 from eeg_emotion.viz.confusion_matrix import save_confusion_matrix
 
+#通用 GridSearch 包装器
+class SklearnSearchAdapter:
+    def __init__(self, search):
+        self.search = search
+        self.best_params_ = None
+        self.best_score_ = None
+
+    def fit(self, X, y):
+        self.search.fit(X, y)
+        self.best_params_ = getattr(self.search, "best_params_", None)
+        self.best_score_ = getattr(self.search, "best_score_", None)
+        return self
+
+    def predict(self, X):
+        return self.search.predict(X)
+
+    def save(self, out_dir: str):
+        os.makedirs(out_dir, exist_ok=True)
+        joblib.dump(self.search, os.path.join(out_dir, "model.joblib"))
+
 
 def build_model(model_cfg: Dict[str, Any]):
     mtype = require(model_cfg, "type", str).lower()
 
     # Common grid keys are passed verbatim to GridSearchCV
     param_grid = model_cfg.get("param_grid")
-
     if mtype == "svm":
-        return SVMClassifier(
-            SVMConfig(
+        # 兼容两种写法：
+        # A) legacy: model: {type: svm, param_grid: {...}, probability: true, ...}
+        # B) new:    model: {type: svm, svm: {...}, param_grid: {...}}
+        svm_block = model_cfg.get("svm")
+        svm_params = svm_block if isinstance(svm_block, dict) else model_cfg
+
+        # 用你现在 svm.py 的 from_dict 解析（支持 kernel/C/gamma/max_iter/tol/solver 等）
+        cfg = from_dict(svm_params)
+
+        base_estimator = SVMModel(cfg).model  # 拿到真正的 sklearn estimator (SVC/LinearSVC)
+
+        if param_grid:
+            search = GridSearchCV(
+                estimator=base_estimator,
                 param_grid=param_grid,
                 cv=int(model_cfg.get("cv", 5)),
                 n_jobs=int(model_cfg.get("n_jobs", -1)),
-                probability=bool(model_cfg.get("probability", True)),
             )
-        )
+            return SklearnSearchAdapter(search)
+
+        # 不做网格搜索就直接返回一个轻量适配器，提供 fit/predict/save
+        class _SVMNoSearchAdapter:
+            def __init__(self, est, cfg):
+                self.est = est
+                self.cfg = cfg
+
+            def fit(self, X, y):
+                self.est.fit(X, y)
+                return self
+
+            def predict(self, X):
+                return self.est.predict(X)
+
+            def save(self, out_dir: str):
+                os.makedirs(out_dir, exist_ok=True)
+                joblib.dump({"cfg": self.cfg, "model": self.est}, os.path.join(out_dir, "model.joblib"))
+
+        return _SVMNoSearchAdapter(base_estimator, cfg)
+
     if mtype == "mlp":
         return MLPAdapter(
             MLPConfig(
