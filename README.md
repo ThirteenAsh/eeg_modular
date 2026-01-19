@@ -374,6 +374,13 @@ python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/
 - 保持配置简洁和可读性
 
 ### 8.2 实验命名
+典型配置字段：
+- output.base_dir / output.run_name
+- data_dir / emotions / csv_files
+- preprocess.xxx
+- model.xxx
+- train.xxx
+- viz.xxx（可选）
 
 - 使用有意义的实验名称，包含关键参数
 - 示例：`svm_rbf_c1.0_gamma_scale`
@@ -428,3 +435,10 @@ EEG Emotion模块化工程是一个设计精良、易于扩展的情感分析框
 - 可扩展的设计
 
 通过使用该工程，研究人员可以快速构建和比较不同的EEG情感分析模型，加速研究进程，提高实验结果的可靠性和可重复性。
+- 在仓库根目录提供：
+  - `ENGINEERINREAD_GUIDE.md`（本文）
+- 约定所有实验 run 都输出到 `outputs/`（但不要把 outputs 提交到 git；用 .gitignore）
+- 每次新增模型/功能：
+  - 新增模块文件
+  - 新增 yaml 示例
+  - README/指南里补一段“如何运行”
