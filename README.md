@@ -1,276 +1,430 @@
-# EEG Emotion 模块化工程指南
+# EEG Emotion 模块化工程设计文档
 
-本文档面向项目组其他同学：快速理解工程结构、如何运行/复现实验、如何新增模型与扩展。
+## 1. 项目概述
 
-> 关键词：**配置驱动**、**统一数据入口**、**统一输出产物**、**可对比实验**、**可插拔模型**。
+EEG Emotion是一个基于脑电图(EEG)数据的情感分析模块化工程，采用配置驱动的设计理念，支持多种机器学习和深度学习模型。
 
+### 1.1 核心功能
 
-## 1. 解决了什么问题
+- 统一的数据预处理接口
+- 多种模型支持（SVM、MLP、RF、LSTM、CNN等）
+- 配置驱动的训练流程
+- 丰富的可视化输出
+- 支持多模型比较
+- 统一的输出目录结构
 
-在迁移前，训练代码往往表现为：
-- 每个模型一份“巨脚本”，数据读取/预处理/训练/可视化混在一起
-- 换一个模型或改一个预处理要复制粘贴
-- 输出文件散落，难以对比多次实验结果
+### 1.2 项目结构
 
-现在工程提供：
-- **统一的数据预处理接口**（tabular 与 sequence 各一套）
-- **统一模型接口**（sklearn / torch / tf）
-- **统一训练入口**（脚本 + yaml 配置）
-- **统一输出目录与指标格式**（`outputs/<run>/metrics.json`），可自动汇总排序对比
-- **统一可视化产物**（至少混淆矩阵；LSTM 额外：曲线图、UMAP+SVM边界图等）
-
-
-## 2. 快速开始（Quickstart）
-
-### 2.1 环境依赖（建议 Python 3.11）
-
-基础依赖（必须）：
-- numpy / pandas / scikit-learn / joblib / matplotlib
-- PyYAML（用于读配置）
-- torch（CNN 路线）
-- tensorflow（LSTM 路线）
-
-可选依赖（不装也能跑主流程，只是跳过部分图）：
-- seaborn（Seaborn 风格混淆矩阵）
-- umap-learn（UMAP + SVM decision boundary）
-
-安装示例：
-```bash
-pip install -U numpy pandas scikit-learn joblib matplotlib pyyaml
-pip install -U torch tensorflow
-pip install -U seaborn umap-learn   # 可选
 ```
-
-
-### 2.2 工程最常用的 4 个命令
-
-1) 训练 sklearn（统计特征 tabular 路线）
-```bash
-python -m scripts.train -c configs/svm.yaml    # 或 configs/<your_sklearn_config>.yaml
-```
-
-2) 训练 CNN（torch，多模态 + 可选 CVAE）
-```bash
-python -m scripts.train_cnn_dl -c configs/cnn.yaml
-```
-
-3) 训练 LSTM（tensorflow，AE 预训练 + 编码 + mixup + 分类器）
-```bash
-python -m scripts.train_lstm_dl -c configs/lstm.yaml
-```
-
-4) 汇总实验（把 outputs 下所有 run 自动对比排序）
-```bash
-python -m scripts.compare_runs --outputs outputs --out outputs/_summary
-```
-
-
-## 3. 工程目录结构（建议先看这个）
-
-> 实际文件可能会随着你们继续扩展而增加，但“职责分层”建议保持不变。
-
-```text
 eeg_emotion/
-  config/
-    loader.py               # 读取/校验 yaml 配置
-  features/
-    csv_stats.py            # tabular 特征入口：data/<emotion>/... -> (X,y)
-    sequence/
-      extract.py            # sequence 特征入口：多 csv -> (X,y)
-      augment.py            # sequence 数据增强：noise/warp/mask/crop + mixup
-  preprocess/
-    tabular.py              # tabular 预处理：impute/scale/(可选)PCA/(可选)augment
-    sequence.py             # sequence 预处理：impute/scale/(可选)PCA（按时间步 reshape）
-  models/
-    sklearn/
-      svm.py                # SVM adapter（SVC/LinearSVC 两种凸优化后端，支持核函数切换）
-      mlp.py                # MLP adapter
-      rf.py                 # RandomForest adapter
-    torch/
-      multimodal_cvae_cnn.py # CNN 分类器（可拼接 CVAE latent）
-      cvae.py               # CVAE 动态加载（checkpoint 兼容）
-    tf/
-      lstm_ae.py            # LSTM AutoEncoder（attention）
-      lstm_clf.py           # 分类器：支持 encoded-MLP 或 sequence-BiLSTM（可切换）
-  dl/
-    common.py               # 通用：seed 等
-    torch/
-      data.py               # 多模态 npy loader（强健 shape/label 处理）
-      losses.py             # Weighted FocalLoss
-      trainer.py            # torch kfold 训练+评估+写 metrics
-    tf/
-      trainer.py            # TF 侧统一输出（当前主要由 train_lstm_dl.py 驱动）
-  train/
-    metrics.py              # 统一分类指标：accuracy + report 等
-    weights.py              # 类别权重计算（含 Sad 手动加权）
-  viz/
-    confusion_matrix.py     # matplotlib 混淆矩阵（默认）
-    seaborn_cm.py           # seaborn 混淆矩阵（可选）
-    umap_boundary.py        # UMAP + SVM decision boundary（可选）
-  utils/
-    logging.py              # 日志
-    paths.py                # run 目录创建：outputs/<run>/{models,figures,logs,artifacts}
-
-scripts/
-  train.py                  # sklearn/tabular 统一训练入口（配置驱动）
-  train_cnn_dl.py           # CNN 入口（torch；含 CVAE/Focal/Scheduler/KFold）
-  train_lstm_dl.py          # LSTM 入口（tf；含 AE+编码+mixup+可视化）
-  compare_runs.py           # 扫描 outputs/*/metrics.json 自动汇总
-
-configs/
-  svm.yaml                  # SVM 配置模板（归一化/核函数/求解器）
-  cnn.yaml                  # CNN 配置模板
-  lstm.yaml                 # LSTM 配置模板
-  *.yaml                    # sklearn 侧各种实验配置（你们后续自己维护）
-
-outputs/
-  <run_name_or_timestamp>/
-    metrics.json            # compare_runs 统一读取的产物
-    summary.json            #（部分路线会有）
-    models/                 # 权重/模型文件
-    figures/                # 混淆矩阵、训练曲线、UMAP 等图
-    logs/                   # train.log
-    artifacts/              # 预处理器（imputer/scaler/pca）等
+├── config/           # 配置管理
+├── data/             # 数据处理
+├── features/         # 特征提取
+├── models/           # 模型实现
+├── preprocess/       # 预处理
+├── utils/            # 工具函数
+├── viz/              # 可视化
+└── scripts/          # 训练脚本
 ```
 
+## 2. 配置驱动设计
 
-## 4. “统一输出产物”规则（强烈建议所有人遵守）
+### 2.1 配置文件结构
 
-每次运行都会生成一个 run 目录：
-- **metrics.json**：必须包含 `accuracy`，建议包含 `report` 与 `best_params`
-- figures/：可视化全部放这里
-- models/：模型权重/导出模型放这里
-- logs/train.log：训练日志
-- artifacts/：任何“可复用且和训练集拟合相关”的东西（预处理器、label encoder 等）
+配置文件采用YAML格式，包含数据、模型、预处理、训练和可视化等配置项：
 
-这样 `scripts.compare_runs` 才能跨模型/跨框架统一对比。
+```yaml
+# 数据配置
+data_dir: ./data
+emotions: [happy, sad, normal]
+csv_files: [att.csv, med.csv, powerspec.csv]
 
+# 模型配置
+model:
+  type: svm
+  solver: svc
+  kernel: rbf
+  C: 1.0
+  gamma: scale
+  class_weight: balanced
 
-## 5. 三条主线怎么用
+# 预处理配置
+preprocess:
+  scale: true
+  select_k_best: null
+  pca_n_components: null
+  augment: false
 
-### 5.1 sklearn / tabular（统计特征）路线
-适用场景：快速 baseline、可解释性、训练速度快。
+# 训练配置
+train:
+  epochs: 100
+  batch_size: 32
+  learning_rate: 0.001
 
-典型流程：
-1) 从 data/<emotion>/... 读取 csv -> 提取统计特征 -> 形成 X,y
-2) fit tabular preprocessor（仅 train）
-3) 训练模型（svm / mlp / rf）
-4) 输出 metrics.json + confusion matrix
+# 可视化配置
+viz:
+  seaborn_confusion_matrix: true
+  umap_boundary: true
+  training_curves: true
+```
 
-运行：
+### 2.2 配置加载与使用
+
+```python
+from eeg_emotion.config.loader import load_config, get, require
+
+# 加载配置文件
+cfg = load_config("configs/svm.yaml")
+
+# 获取配置项
+emotions = require(cfg, "emotions", list)
+model_type = require(cfg, "model.type", str)
+seaborn_cm = get(cfg, "viz.seaborn_confusion_matrix", False)
+```
+
+## 3. 可视化功能
+
+### 3.1 混淆矩阵
+
+支持两种混淆矩阵风格：
+
+1. **matplotlib风格**：简洁的混淆矩阵
+2. **seaborn风格**：带有热力图效果的混淆矩阵
+
+**配置示例**：
+
+```yaml
+viz:
+  seaborn_confusion_matrix: true  # true: seaborn风格, false: matplotlib风格
+```
+
+### 3.2 训练曲线
+
+支持绘制训练过程中的准确率和损失曲线，包含：
+
+- 训练集和验证集的准确率曲线
+- 训练集和验证集的损失曲线
+
+**配置示例**：
+
+```yaml
+viz:
+  training_curves: true
+```
+
+### 3.3 UMAP边界图
+
+生成UMAP降维后的SVM决策边界图，支持：
+
+- 不同的UMAP配置参数
+- 多种边界绘制模式（填充、线条、两者结合）
+- 自适应的颜色和样式
+
+**配置示例**：
+
+```yaml
+viz:
+  umap_boundary: true
+```
+
+### 3.4 多模型UMAP边界图
+
+在单个UMAP投影上绘制多个模型的决策边界，便于直观比较不同模型的决策边界差异。
+
+**注意**：目前只支持sklearn模型（SVM、MLP、RF），CNN和LSTM等深度学习模型需要不同的处理方式，暂不支持。
+
+**使用方法**：
+
 ```bash
-python -m scripts.train -c configs/svm.yaml    # 或 configs/<svm_or_mlp_or_rf>.yaml
+python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml -o outputs/multi_model_umap
 ```
 
-**SVM 三项常用改动**
+**输出结果**：
+- `multi_model_umap_boundary.png`：包含所有模型决策边界的UMAP图，带有清晰的图例说明
 
-* **归一化（Normalization）**：在 YAML 中启用 `preprocess.scale: true`，并选择 `preprocess.scaler: standard | minmax | robust`。
-* **核函数（Kernel）**：通过 `model.svm.kernel: rbf | poly | linear | sigmoid` 切换核类型，并按需设置 `C / gamma / degree / coef0` 等超参。
-* **“凸优化 / 求解稳定性”**：SVM 本质是凸优化问题；工程层面主要通过选择求解后端 `solver: svc | linearsvc`，以及调节 `max_iter / tol` 来控制收敛速度与训练稳定性。
+**图例说明**：
+- 左侧图例显示数据点对应的情感类别
+- 右侧图例显示不同颜色和线型对应的模型名称
+- 每种模型使用不同的颜色和线型，便于区分
 
-你要新增一个 sklearn 模型：
-- 在 `eeg_emotion/models/sklearn/` 里新增 `<model>.py`，实现统一接口（fit/predict/save/load）
-- 写一个 yaml 指向该模型即可（不需要改训练脚本）
+**优势**：
+- 只需要一张图就能直观比较多个模型的决策边界
+- 清晰的图例说明，便于理解
+- 避免了多个单独UMAP图的冗余
+- 统一的UMAP投影，确保模型边界的可比性
 
+## 4. 运行实例汇总
 
-### 5.2 CNN / torch（多模态 npy + 可选 CVAE）路线
-适用场景：你已经有 `X_train_*.npy` 这种多模态序列输入；想用 CNN 学到更鲁棒的模式。
+### 4.1 SVM模型训练
 
-运行：
+**配置文件**：`configs/svm.yaml`
+
+**运行命令**：
 ```bash
-python -m scripts.train_cnn_dl -c configs/cnn.yaml
+python -m scripts.train -c configs/svm.yaml
 ```
 
-数据要求（在 `cnn.data_dir` 目录下）：
-- `X_train_<modality>.npy`
-- `X_test_<modality>.npy`
-- `y_train_filtered.npy`（可 one-hot；会自动转 int）
-- `y_test_filtered.npy`
-- `label_encoder.joblib`（可选，但推荐有；用于 class_names）
+### 4.2 MLP模型训练
 
-关于 CVAE：
-- `configs/cnn.yaml` 里设置：
-  - `cnn.cvae.enabled: true`
-  - `cnn.cvae.checkpoint: ...`
-- 默认会 `import cvae_model`；如果你的 `cvae_model.py` 不在工程内，填 `cnn.cvae.py_path` 指向它即可。
+**配置文件**：`configs/mlp.yaml`
 
+**运行命令**：
+```bash
+python -m scripts.train -c configs/mlp.yaml
+```
 
-### 5.3 LSTM / tensorflow（AE 预训练 + 编码 + mixup + 分类器）路线
-适用场景：你希望保持你原始 LSTM 思路：先学表征，再做分类。
+### 4.3 RF模型训练
 
-运行：
+**配置文件**：`configs/rf.yaml`
+
+**运行命令**：
+```bash
+python -m scripts.train -c configs/rf.yaml
+```
+
+### 4.4 LSTM模型训练
+
+**配置文件**：`configs/lstm.yaml`
+
+**运行命令**：
 ```bash
 python -m scripts.train_lstm_dl -c configs/lstm.yaml
 ```
 
-关键参数都在 `configs/lstm.yaml`：
-- `gaussian_noise`：训练集输入高斯噪声注入（可指定对 AE/Classifier 生效，train-only）
+### 4.5 CNN模型训练
 
-- `csv_files`：每个 sample 文件夹里希望读取的 csv 列表
-- `time_steps`：序列统一长度（不足 padding，过长截断）
-- `augment`：按类增强次数（train-only）
-- `preprocess`：impute/scale/PCA（按每个时间步进行 reshape 处理）
-- `autoencoder`：AE 训练参数
-- `mixup`：在 encoded features 上做 mixup
-- `classifier`：分类器训练参数 + 学习率策略（`classifier.mode: bilstm|mlp`）
-  - `bilstm`：Classifier 直接吃序列 (T,F) 做 BiLSTM 分类（同时支持 Dropout）
-  - `mlp`：Classifier 吃 encoder 输出向量做 MLP 分类（旧路线）
+**配置文件**：`configs/cnn.yaml`
 
-可视化（可选）：
-- `viz.seaborn_confusion_matrix: true` -> 输出 seaborn 混淆矩阵
-- `viz.umap_svm_boundary: true` -> 输出 UMAP+SVM 边界图
-需要额外安装 seaborn 与 umap-learn；缺包会自动跳过，不影响主训练。
-
-
-## 6. configs（配置）怎么写/怎么扩展
-
-建议约定：
-- 每个实验一个 yaml（比如 `svm_baseline.yaml`, `mlp_kbest_500.yaml`）
-- yaml 里不要写绝对路径（除非团队机器差异太大），尽量用相对路径或在 README 指定目录结构
-
-典型配置字段（示例思想）：
-- output.base_dir / output.run_name
-- data_dir / emotions / csv_files
-- preprocess.xxx
-- model.xxx
-- train.xxx
-- viz.xxx（可选）
-
-工程对 “跑实验” 的核心约定：
-- **只通过改 yaml 做实验对比**（尽量不要直接改 python 代码）
-- 新功能/新模型通过新增模块实现，而不是在 train 脚本里堆条件分支
-
-
-## 7. 常见问题（Troubleshooting）
-
-### 7.1 LSTM：LearningRateSchedule + ReduceLROnPlateau 冲突
-如果 classifier 使用 `CosineDecay` 等 schedule，就不能再用 ReduceLROnPlateau（它会尝试 set lr）。
-工程已做了保护：当 `use_cosine_decay=true` 会自动不启用 ReduceLROnPlateau。
-
-补充：Classifier 支持 `classifier.mode: bilstm|mlp`；其中 `bilstm` 直接对序列做分类，适合你要的“BiLSTM 用到过去+未来上下文”的场景。
-
-### 7.2 缺 seaborn / umap-learn
-会在日志提示“跳过”，但训练仍正常完成。要生成对应图再安装：
+**运行命令**：
 ```bash
-pip install seaborn umap-learn
+python -m scripts.train_cnn_dl -c configs/cnn.yaml
 ```
 
-### 7.3 CNN：多模态 npy shape 不一致
-loader 会尽量规范到 (N,T,F)（例如自动把 (N,F,T) 转置），但如果你本身 npy 不匹配，仍会报错并指出具体模态/shape。建议统一在生成 npy 的脚本处保证一致性。
+### 4.6 多模型UMAP比较
 
-### 7.4 如何复现实验结果
-- 固定 `seed`
-- 不要在训练中手动改脚本逻辑
-- 每次运行保留 `configs/*.yaml`（metrics.json 会记录 config_path）
+**运行命令**：
+```bash
+python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml -o outputs/multi_model_umap
+```
 
+## 5. 可视化选择
 
-## 8. 团队协作建议
+### 5.1 如何选择可视化风格
 
-- 在仓库根目录提供：
-  - `ENGINEERING_GUIDE.md`（本文）
-  - `CHANGES_SUMMARY.md`（你这次重构做了哪些变更）
-- 约定所有实验 run 都输出到 `outputs/`（但不要把 outputs 提交到 git；用 .gitignore）
-- 每次新增模型/功能：
-  - 新增模块文件
-  - 新增 yaml 示例
-  - README/指南里补一段“如何运行”
+#### 1. 配置文件设置
+
+在YAML配置文件中添加可视化风格选择参数：
+
+```yaml
+# configs/svm.yaml
+viz:
+  seaborn_confusion_matrix: true  # true: seaborn风格, false: matplotlib风格
+  umap_boundary: true              # 是否生成UMAP边界图
+  training_curves: true            # 是否生成训练曲线
+```
+
+#### 2. 训练脚本支持
+
+所有训练脚本都支持根据配置文件选择可视化风格：
+
+- `scripts/train.py`：支持sklearn模型（SVM、MLP、RF等）
+- `scripts/train_lstm_dl.py`：支持LSTM模型
+- `scripts/train_cnn_dl.py`：支持CNN模型
+- `scripts/train_svm_modular.py`：支持SVM模型
+
+### 5.2 训练曲线实现
+
+训练曲线绘制目前在LSTM/tensorflow路线中实现，其他路线可参考扩展。
+
+**核心实现**：
+
+```python
+def plot_training_curves(history, save_path):
+    """绘制训练曲线"""
+    # 绘制准确率曲线
+    plt.figure(figsize=(12, 4))
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['accuracy'])
+    plt.plot(history.history['val_accuracy'])
+    plt.title('Model Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend(['Train', 'Validation'], loc='upper left')
+    
+    # 绘制损失曲线
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['loss'])
+    plt.plot(history.history['val_loss'])
+    plt.title('Model Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend(['Train', 'Validation'], loc='upper left')
+    
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+```
+
+## 6. UMAP边界图生成
+
+### 6.1 UMAP边界图问题分析
+
+#### 1. 为什么UMAP没有生成？
+
+- UMAP绘制函数已实现：`save_umap_svm_decision_boundary`
+- 但训练脚本没有调用它
+- 缺少配置选项处理
+- 缺少依赖检查
+
+#### 2. 解决方案
+
+修改训练脚本以启用UMAP边界绘制：
+
+```python
+# 从配置文件读取UMAP设置
+generate_umap = get(cfg, "viz.umap_boundary", False)
+
+# 绘制UMAP边界图（如果配置启用）
+if generate_umap:
+    try:
+        save_umap_svm_decision_boundary(
+            X=X_test_t,
+            y=y_test,
+            class_names=emotions,
+            save_path=os.path.join(run.figures_dir, "umap_boundary.png"),
+            title="UMAP Projection with Decision Boundary (Test Set)",
+        )
+        logger.info("✅ UMAP boundary plot saved")
+    except ImportError:
+        logger.warning("⚠️ umap-learn not installed, skipping UMAP boundary plot")
+    except Exception as e:
+        logger.error(f"❌ Failed to generate UMAP boundary: {e}")
+```
+
+### 6.2 多模型UMAP边界图
+
+**功能说明**：在单个UMAP投影上绘制多个模型的决策边界，便于直观比较不同模型的决策边界差异。
+
+**使用方法**：
+
+```bash
+python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml -o outputs/multi_model_umap
+```
+
+**实现原理**：
+1. 生成单个UMAP投影（仅一次）
+2. 对每个模型，使用其预测结果在UMAP空间中训练代理SVM
+3. 在同一UMAP投影上绘制所有代理SVM的决策边界
+4. 使用不同颜色和线型区分不同模型的边界
+
+## 7. 模块详细说明
+
+### 7.1 配置模块（config）
+
+**核心功能**：
+- 加载和解析YAML配置文件
+- 提供配置验证和默认值
+- 支持嵌套配置访问
+
+**主要文件**：
+- `config/loader.py`：配置加载和解析
+
+### 7.2 数据模块（data）
+
+**核心功能**：
+- 数据加载和预处理
+- 支持多种数据格式
+- 提供数据增强功能
+
+**主要文件**：
+- `data/loader.py`：数据加载
+- `data/augment.py`：数据增强
+
+### 7.3 模型模块（models）
+
+**核心功能**：
+- 支持多种模型类型
+- 统一的模型接口
+- 支持模型保存和加载
+
+**主要文件**：
+- `models/sklearn/`：sklearn模型实现
+- `models/tensorflow/`：tensorflow模型实现
+
+### 7.4 可视化模块（viz）
+
+**核心功能**：
+- 混淆矩阵生成
+- 训练曲线绘制
+- UMAP边界图生成
+- 多模型可视化比较
+
+**主要文件**：
+- `viz/confusion_matrix.py`：混淆矩阵
+- `viz/training_curves.py`：训练曲线
+- `viz/umap_boundary.py`：UMAP边界图
+
+## 8. 最佳实践
+
+### 8.1 配置文件设计
+
+- 每个实验使用独立的配置文件
+- 使用清晰的命名规则（如`svm_baseline.yaml`）
+- 避免使用绝对路径
+- 保持配置简洁和可读性
+
+### 8.2 实验命名
+
+- 使用有意义的实验名称，包含关键参数
+- 示例：`svm_rbf_c1.0_gamma_scale`
+
+### 8.3 结果分析
+
+- 关注多个指标（准确率、精确率、召回率、F1值）
+- 分析混淆矩阵，了解模型在不同类别上的表现
+- 比较不同模型和参数的表现
+
+## 9. 常见问题与解决方案
+
+### 9.1 数据泄露问题
+
+**问题**：预处理过程中使用了测试集数据，导致模型泛化能力下降。
+
+**解决方案**：
+- 严格遵循预处理流程，只在训练集上拟合预处理模型
+- 使用`fit_transform_train`方法处理训练集
+- 使用`transform`方法处理验证集和测试集
+
+### 9.2 模型过拟合问题
+
+**问题**：模型在训练集上表现良好，但在测试集上表现较差。
+
+**解决方案**：
+- 增加数据量或使用数据增强
+- 降低模型复杂度
+- 使用正则化技术
+- 增加验证集比例
+- 早期停止
+
+### 9.3 实验结果不一致
+
+**问题**：相同配置文件，多次运行结果不一致。
+
+**解决方案**：
+- 确保随机种子设置正确
+- 检查是否使用了随机数据增强
+- 确保数据加载顺序一致
+
+## 10. 总结
+
+EEG Emotion模块化工程是一个设计精良、易于扩展的情感分析框架，采用配置驱动的设计理念，支持多种模型和训练方式。
+
+**核心优势**：
+- 统一的数据预处理接口
+- 统一的模型接口
+- 统一的训练入口
+- 统一的输出目录与指标格式
+- 统一的可视化产物
+- 可扩展的设计
+
+通过使用该工程，研究人员可以快速构建和比较不同的EEG情感分析模型，加速研究进程，提高实验结果的可靠性和可重复性。

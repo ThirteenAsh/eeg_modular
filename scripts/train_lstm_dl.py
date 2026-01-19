@@ -26,6 +26,7 @@ from eeg_emotion.train.metrics import classification_metrics
 from eeg_emotion.utils.logging import setup_logging
 from eeg_emotion.utils.paths import make_run_paths
 from eeg_emotion.viz.confusion_matrix import save_confusion_matrix
+from eeg_emotion.viz.umap_boundary import save_umap_svm_decision_boundary
 
 
 def parse_args():
@@ -287,6 +288,41 @@ def main():
         normalize="true",
         title="Confusion Matrix (Normalized)",
     )
+
+    # 绘制UMAP边界图（如果配置启用）
+    viz_config = get(cfg, 'viz', {})
+    generate_umap = viz_config.get("umap_boundary", False)
+    generate_umap = bool(generate_umap)
+    if generate_umap:
+        try:
+            # 根据分类器模式选择不同的特征
+            if clf_mode == "bilstm":
+                # BiLSTM模式：使用测试集的原始序列特征（已经过预处理）
+                # 但UMAP需要2D或3D数据，所以我们需要先降维
+                # 这里使用编码后的特征，因为它们已经是低维的
+                umap_X = X_test_enc
+            else:
+                # MLP模式：使用编码后的特征
+                umap_X = X_test_enc
+            
+            save_umap_svm_decision_boundary(
+                X=umap_X,  # 测试集特征
+                y=y_eval,    # 测试集标签
+                class_names=emotions,  # 类别名称
+                save_path=os.path.join(run.figures_dir, "umap_boundary.png"),  # 保存路径
+                title="UMAP Projection with Decision Boundary (Test Set)",  # 标题
+            )
+            logger.info("✅ UMAP boundary plot saved")
+        except ImportError:
+            logger.warning("⚠️ umap-learn not installed, skipping UMAP boundary plot")
+        except RuntimeError as e:
+            if "torchvision" in str(e) or "nms" in str(e):
+                logger.warning(f"⚠️ torchvision compatibility issue, skipping UMAP boundary plot: {e}")
+                logger.warning("   建议：1) 安装兼容版本的torchvision 或 2) 降低umap-learn版本")
+            else:
+                logger.error(f"❌ Failed to generate UMAP boundary: {e}")
+        except Exception as e:
+            logger.error(f"❌ Failed to generate UMAP boundary: {e}")
 
     out = {
         "accuracy": m["accuracy"],
