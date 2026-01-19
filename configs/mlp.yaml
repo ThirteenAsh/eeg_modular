@@ -33,3 +33,7 @@ model:
 output:
   base_dir: outputs
   # run_name: mlp_grid
+
+viz:
+  seaborn_confusion_matrix: true  # 使用matplotlib风格的混淆矩阵
+  umap_boundary: false  # 默认关闭单个模型的UMAP生成

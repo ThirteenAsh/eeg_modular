@@ -24,6 +24,7 @@ from eeg_emotion.utils.logging import setup_logging
 from eeg_emotion.utils.paths import make_run_paths
 from eeg_emotion.utils.seed import set_seed
 from eeg_emotion.viz.confusion_matrix import save_confusion_matrix
+from eeg_emotion.viz.umap_boundary import save_umap_svm_decision_boundary
 
 #通用 GridSearch 包装器
 class SklearnSearchAdapter:
@@ -212,6 +213,47 @@ def main() -> None:
         normalize="true",
         title="Confusion Matrix (Normalized)",
     )
+
+    # 绘制UMAP边界图（如果配置启用）
+    viz_config = get(cfg, 'viz', {})
+    logger.info(f"📋 viz配置: {viz_config}")
+    # 直接从viz_config字典中获取值，而不是使用get函数
+    generate_umap = viz_config.get("umap_boundary", False)
+    # 确保generate_umap是布尔值
+    generate_umap = bool(generate_umap)
+    logger.info(f"🔍 UMAP生成开关: {generate_umap}")
+    if generate_umap:
+        logger.info("🎨 开始生成UMAP边界图...")
+        try:
+            # 打印UMAP绘制所需的信息
+            logger.info(f"📊 UMAP输入特征形状: {X_test_t.shape}")
+            logger.info(f"📊 UMAP输入标签形状: {y_test.shape}")
+            logger.info(f"📊 类别名称: {emotions}")
+            
+            save_umap_svm_decision_boundary(
+                X=X_test_t,  # 测试集特征
+                y=y_test,    # 测试集标签
+                class_names=emotions,  # 类别名称
+                save_path=os.path.join(run.figures_dir, "umap_boundary.png"),  # 保存路径
+                title="UMAP Projection with Decision Boundary (Test Set)",  # 标题
+            )
+            logger.info("✅ UMAP boundary plot saved")
+        except ImportError as e:
+            logger.warning(f"⚠️ umap-learn not installed, skipping UMAP boundary plot: {e}")
+        except RuntimeError as e:
+            if "torchvision" in str(e) or "nms" in str(e):
+                logger.warning(f"⚠️ torchvision compatibility issue, skipping UMAP boundary plot: {e}")
+                logger.warning("   建议：1) 安装兼容版本的torchvision 或 2) 降低umap-learn版本")
+            else:
+                logger.error(f"❌ Failed to generate UMAP boundary: {e}")
+                import traceback
+                logger.error(f"📋 错误堆栈: {traceback.format_exc()}")
+        except Exception as e:
+            logger.error(f"❌ Failed to generate UMAP boundary: {e}")
+            import traceback
+            logger.error(f"📋 错误堆栈: {traceback.format_exc()}")
+    else:
+        logger.info("🚫 UMAP边界图生成已关闭")
 
     out = {
         "accuracy": m["accuracy"],

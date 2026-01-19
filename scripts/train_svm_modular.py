@@ -16,6 +16,7 @@ from eeg_emotion.utils.logging import setup_logging
 from eeg_emotion.utils.paths import make_run_paths
 from eeg_emotion.utils.seed import set_seed
 from eeg_emotion.viz.confusion_matrix import save_confusion_matrix
+from eeg_emotion.viz.umap_boundary import save_umap_svm_decision_boundary
 
 
 def main() -> None:
@@ -108,6 +109,21 @@ def main() -> None:
         normalize="true",
         title="SVM Confusion Matrix (Normalized)",
     )
+
+    # 绘制UMAP边界图
+    try:
+        save_umap_svm_decision_boundary(
+            X=X_test_scaled,  # 测试集特征
+            y=y_test,    # 测试集标签
+            class_names=emotions,  # 类别名称
+            save_path=os.path.join(run.figures_dir, "umap_boundary.png"),  # 保存路径
+            title="UMAP Projection with Decision Boundary (Test Set)",  # 标题
+        )
+        logger.info("✅ UMAP boundary plot saved")
+    except ImportError:
+        logger.warning("⚠️ umap-learn not installed, skipping UMAP boundary plot")
+    except Exception as e:
+        logger.error(f"❌ Failed to generate UMAP boundary: {e}")
 
     metrics = {
         "accuracy": acc,

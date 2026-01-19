@@ -4,6 +4,7 @@ import argparse
 import os
 from typing import Any, Dict, Optional
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
@@ -18,6 +19,7 @@ from eeg_emotion.models.torch.cvae import CVAEConfig, load_cvae
 from eeg_emotion.train.weights import ClassWeightConfig, compute_balanced_class_weights, apply_manual_weights, to_tensor
 from eeg_emotion.utils.paths import make_run_paths
 from eeg_emotion.utils.logging import setup_logging
+from eeg_emotion.viz.umap_boundary import save_umap_svm_decision_boundary
 
 
 def parse_args():
@@ -138,6 +140,44 @@ def main():
         device=device,
     )
 
+    # 绘制UMAP边界图（如果配置启用）
+    viz_config = get(cfg, 'viz', {})
+    generate_umap = viz_config.get("umap_boundary", False)
+    generate_umap = bool(generate_umap)
+    if generate_umap:
+        try:
+            # 准备UMAP数据
+            # 我们需要将测试集数据转换为适合UMAP的格式
+            # 对于多模态数据，我们可以将所有模态的数据展平并拼接
+            X_test_flat = []
+            for m in modalities:
+                # 获取测试集数据
+                modality_data = X_test_dict[m]
+                # 展平数据：(samples, time_steps, feat_dim) -> (samples, time_steps * feat_dim)
+                flattened = modality_data.reshape(modality_data.shape[0], -1)
+                X_test_flat.append(flattened)
+            # 拼接所有模态的数据
+            X_test_combined = np.concatenate(X_test_flat, axis=1)
+            
+            save_umap_svm_decision_boundary(
+                X=X_test_combined,  # 测试集特征
+                y=y_test,    # 测试集标签
+                class_names=class_names,  # 类别名称
+                save_path=os.path.join(run.figures_dir, "umap_boundary.png"),  # 保存路径
+                title="UMAP Projection with Decision Boundary (Test Set)",  # 标题
+            )
+            logger.info("✅ UMAP boundary plot saved")
+        except ImportError:
+            logger.warning("⚠️ umap-learn not installed, skipping UMAP boundary plot")
+        except RuntimeError as e:
+            if "torchvision" in str(e) or "nms" in str(e):
+                logger.warning(f"⚠️ torchvision compatibility issue, skipping UMAP boundary plot: {e}")
+                logger.warning("   建议：1) 安装兼容版本的torchvision 或 2) 降低umap-learn版本")
+            else:
+                logger.error(f"❌ Failed to generate UMAP boundary: {e}")
+        except Exception as e:
+            logger.error(f"❌ Failed to generate UMAP boundary: {e}")
+    
     logger.info("✅ Done. test accuracy=%.4f run_dir=%s", out["accuracy"], run.run_dir)
 
 
