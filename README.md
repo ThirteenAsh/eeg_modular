@@ -204,8 +204,7 @@ python -m scripts.train_cnn_dl -c configs/cnn.yaml
 
 **运行命令**：
 ```bash
-python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml -o 
-outputs/multi_model_umap
+python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml configs/xgb.yaml -o outputs/multi_model_umap
 ```
 
 ### 4.7XGBoost 接入说明

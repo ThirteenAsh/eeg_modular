@@ -225,10 +225,15 @@ def main() -> None:
 
     out_cfg = get(cfg, "output", {})
     base_dir = str(out_cfg.get("base_dir", "outputs"))
-    run_name = out_cfg.get("run_name", None)
-
+    
+    # 不使用配置文件中的run_name，所有模型都使用时间戳作为输出目录名
+    run_name = None
+    
     run = make_run_paths(base_dir=base_dir, run_name=run_name)
     logger = setup_logging(os.path.join(run.logs_dir, "train.log"))
+    
+    # 记录最终使用的run_dir
+    logger.info(f"📁 使用的输出目录: {run.run_dir}")
 
     model = build_model(require(cfg, "model", dict))
     pp = build_preprocess(require(cfg, "preprocess", dict))
@@ -276,18 +281,50 @@ def main() -> None:
     model.save(run.models_dir)
     pp.save(run.artifacts_dir)
 
-    save_confusion_matrix(
-        y_true=y_test,
-        y_pred=y_pred,
-        class_names=emotions,
-        save_path=os.path.join(run.figures_dir, "confusion_matrix.png"),
-        normalize="true",
-        title="Confusion Matrix (Normalized)",
-    )
-
-    # 绘制UMAP边界图（如果配置启用）
+    # 绘制混淆矩阵（根据配置选择风格）
     viz_config = get(cfg, 'viz', {})
     logger.info(f"📋 viz配置: {viz_config}")
+    use_seaborn_cm = viz_config.get("seaborn_confusion_matrix", False)
+    use_seaborn_cm = bool(use_seaborn_cm)
+    logger.info(f"🔍 Seaborn混淆矩阵开关: {use_seaborn_cm}")
+    
+    if use_seaborn_cm:
+        try:
+            from eeg_emotion.viz.seaborn_cm import save_confusion_matrix_seaborn
+            save_confusion_matrix_seaborn(
+                y_true=y_test,
+                y_pred=y_pred,
+                class_names=emotions,
+                save_path=os.path.join(run.figures_dir, "confusion_matrix.png"),
+                normalize="true",
+                title="Confusion Matrix (Normalized)",
+            )
+            logger.info("✅ Seaborn风格混淆矩阵已保存")
+        except ImportError as e:
+            logger.warning(f"⚠️ seaborn未安装，退回到matplotlib风格混淆矩阵: {e}")
+            from eeg_emotion.viz.confusion_matrix import save_confusion_matrix
+            save_confusion_matrix(
+                y_true=y_test,
+                y_pred=y_pred,
+                class_names=emotions,
+                save_path=os.path.join(run.figures_dir, "confusion_matrix.png"),
+                normalize="true",
+                title="Confusion Matrix (Normalized)",
+            )
+            logger.info("✅ Matplotlib风格混淆矩阵已保存")
+    else:
+        from eeg_emotion.viz.confusion_matrix import save_confusion_matrix
+        save_confusion_matrix(
+            y_true=y_test,
+            y_pred=y_pred,
+            class_names=emotions,
+            save_path=os.path.join(run.figures_dir, "confusion_matrix.png"),
+            normalize="true",
+            title="Confusion Matrix (Normalized)",
+        )
+        logger.info("✅ Matplotlib风格混淆矩阵已保存")
+
+    # 绘制UMAP边界图（如果配置启用）
     # 直接从viz_config字典中获取值，而不是使用get函数
     generate_umap = viz_config.get("umap_boundary", False)
     # 确保generate_umap是布尔值

@@ -35,8 +35,11 @@ def main():
     set_seed(seed)
 
     out_cfg = get(cfg, "output", {})
-    run = make_run_paths(base_dir=str(out_cfg.get("base_dir", "outputs")), run_name=out_cfg.get("run_name"))
+    # 不使用配置文件中的run_name，所有模型都使用时间戳作为输出目录名
+    run = make_run_paths(base_dir=str(out_cfg.get("base_dir", "outputs")), run_name=None)
     logger = setup_logging(os.path.join(run.logs_dir, "train.log"))
+    # 记录最终使用的run_dir
+    logger.info(f"📁 使用的输出目录: {run.run_dir}")
 
     cnn_cfg = require(cfg, "cnn", dict)
     data_dir = str(require(cnn_cfg, "data_dir", str))
@@ -127,6 +130,12 @@ def main():
 
     logger.info("🚀 Training CNN (CVAE=%s, focal_gamma=%.2f, splits=%d)", use_cvae, gamma, tcfg.n_splits)
 
+    # 获取可视化配置
+    viz_config = get(cfg, 'viz', {})
+    use_seaborn_cm = viz_config.get("seaborn_confusion_matrix", False)
+    use_seaborn_cm = bool(use_seaborn_cm)
+    logger.info(f"🔍 Seaborn混淆矩阵开关: {use_seaborn_cm}")
+    
     out = train_kfold(
         model_fn=model_fn,
         train_dataset=train_ds,
@@ -138,10 +147,10 @@ def main():
         criterion=criterion,
         use_labels_for_forward=use_cvae,  # CVAE needs labels in forward
         device=device,
+        use_seaborn_confusion_matrix=use_seaborn_cm,
     )
 
     # 绘制UMAP边界图（如果配置启用）
-    viz_config = get(cfg, 'viz', {})
     generate_umap = viz_config.get("umap_boundary", False)
     generate_umap = bool(generate_umap)
     if generate_umap:

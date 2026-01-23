@@ -62,9 +62,38 @@ def build_model(model_cfg: Dict[str, Any], model_type: str):
             random_state=int(model_cfg.get("random_state", 42)),
             n_jobs=int(model_cfg.get("n_jobs", -1)),
         )
+    elif model_type in ("xgboost", "xgb"):
+        from xgboost import XGBClassifier
+        
+        # 兼容两种写法：
+        # A) legacy: model: {type: xgboost, param_grid: {...}, ...}
+        # B) new:    model: {type: xgboost, xgboost: {...}, param_grid: {...}}
+        xgb_block = model_cfg.get("xgboost") or model_cfg.get("xgb")
+        xgb_params = xgb_block if isinstance(xgb_block, dict) else model_cfg
+
+        # 基础参数（不在 param_grid 里的部分）
+        # 注意：多分类需要 objective + num_class
+        base_params = {
+            "n_estimators": int(xgb_params.get("n_estimators", 300)),
+            "max_depth": int(xgb_params.get("max_depth", 6)),
+            "learning_rate": float(xgb_params.get("learning_rate", 0.05)),
+            "subsample": float(xgb_params.get("subsample", 0.9)),
+            "colsample_bytree": float(xgb_params.get("colsample_bytree", 0.9)),
+            "min_child_weight": float(xgb_params.get("min_child_weight", 1.0)),
+            "gamma": float(xgb_params.get("gamma", 0.0)),
+            "reg_lambda": float(xgb_params.get("reg_lambda", 1.0)),
+            "reg_alpha": float(xgb_params.get("reg_alpha", 0.0)),
+            "objective": str(xgb_params.get("objective", "multi:softprob")),
+            "eval_metric": str(xgb_params.get("eval_metric", "mlogloss")),
+            "tree_method": str(xgb_params.get("tree_method", "auto")),
+            "random_state": int(xgb_params.get("random_state", 42)),
+            "n_jobs": int(xgb_params.get("n_jobs", model_cfg.get("n_jobs", -1))),
+        }
+        
+        return XGBClassifier(**base_params)
     else:
         # 目前只支持sklearn模型，CNN和LSTM是深度学习模型，需要不同的处理方式
-        raise ValueError(f"Unsupported model type: {model_type}. Currently only sklearn models (SVM, MLP, RF) are supported.")
+        raise ValueError(f"Unsupported model type: {model_type}. Currently only sklearn models (SVM, MLP, RF, XGBoost) are supported.")
 
 
 def build_preprocess(pp_cfg: Dict[str, Any]) -> TabularPreprocessor:
