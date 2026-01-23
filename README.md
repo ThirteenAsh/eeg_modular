@@ -204,8 +204,36 @@ python -m scripts.train_cnn_dl -c configs/cnn.yaml
 
 **运行命令**：
 ```bash
-python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml -o outputs/multi_model_umap
+python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml -o 
+outputs/multi_model_umap
 ```
+
+### 4.7XGBoost 接入说明
+
+本补丁完成：
+
+- scripts/train.py：新增 model.type = xgboost / xgb 分支（支持 GridSearchCV）
+- configs/xgb.yaml：提供同口径配置模板
+
+##### 运行
+
+```bash
+python -m scripts.train -c configs/xgb.yaml
+```
+
+##### 配置要点
+
+- 固定参数放在：model.xgboost 下（例如 objective / eval_metric / tree_method）
+- 网格搜索参数放在：model.param_grid 下
+- 多分类建议：
+  - objective: multi:softprob
+  - eval_metric: mlogloss
+  - num_class 可以不写；训练时会从标签自动推断（No-GridSearch 模式），或你也可在 model.xgboost.num_class 显式指定。
+
+##### 并行说明
+
+- GridSearchCV 自己会并行（n_jobs）
+- 为避免“外层并行 + XGBoost 内层并行”线程嵌套，本补丁在启用 param_grid 时将 XGBoost 的 n_jobs 强制设为 1。
 
 ## 5. 可视化选择
 

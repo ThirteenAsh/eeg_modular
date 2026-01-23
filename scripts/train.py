@@ -15,6 +15,7 @@ from eeg_emotion.models.sklearn.mlp import MLPAdapter, MLPConfig
 from eeg_emotion.models.sklearn.rf import RFAdapter, RFConfig
 from sklearn.model_selection import GridSearchCV
 import joblib
+from xgboost import XGBClassifier
 
 from eeg_emotion.models.sklearn.svm import SVMModel, from_dict
 
@@ -65,6 +66,11 @@ def build_model(model_cfg: Dict[str, Any]):
         base_estimator = SVMModel(cfg).model  # 拿到真正的 sklearn estimator (SVC/LinearSVC)
 
         if param_grid:
+            # 避免 GridSearchCV (外层并行) + XGBoost (内层并行) 造成线程嵌套
+            try:
+                base_estimator.set_params(n_jobs=1)
+            except Exception:
+                pass
             search = GridSearchCV(
                 estimator=base_estimator,
                 param_grid=param_grid,
@@ -111,9 +117,74 @@ def build_model(model_cfg: Dict[str, Any]):
                 random_state=int(model_cfg.get("random_state", 42)),
             )
         )
+    if mtype in ("xgboost", "xgb"):
+        # 兼容两种写法：
+        # A) legacy: model: {type: xgboost, param_grid: {...}, ...}
+        # B) new:    model: {type: xgboost, xgboost: {...}, param_grid: {...}}
+        xgb_block = model_cfg.get("xgboost") or model_cfg.get("xgb")
+        xgb_params = xgb_block if isinstance(xgb_block, dict) else model_cfg
 
-    raise ConfigError(f"Unsupported model.type: {mtype} (supported: svm/mlp/rf)")
+        # 基础参数（不在 param_grid 里的部分）
+        # 注意：多分类需要 objective + num_class
+        base_params = {
+            "n_estimators": int(xgb_params.get("n_estimators", 300)),
+            "max_depth": int(xgb_params.get("max_depth", 6)),
+            "learning_rate": float(xgb_params.get("learning_rate", 0.05)),
+            "subsample": float(xgb_params.get("subsample", 0.9)),
+            "colsample_bytree": float(xgb_params.get("colsample_bytree", 0.9)),
+            "min_child_weight": float(xgb_params.get("min_child_weight", 1.0)),
+            "gamma": float(xgb_params.get("gamma", 0.0)),
+            "reg_lambda": float(xgb_params.get("reg_lambda", 1.0)),
+            "reg_alpha": float(xgb_params.get("reg_alpha", 0.0)),
+            "objective": str(xgb_params.get("objective", "multi:softprob")),
+            "eval_metric": str(xgb_params.get("eval_metric", "mlogloss")),
+            "tree_method": str(xgb_params.get("tree_method", "auto")),
+            "random_state": int(xgb_params.get("random_state", 42)),
+            "n_jobs": int(xgb_params.get("n_jobs", model_cfg.get("n_jobs", -1))),
+        }
 
+        # num_class: 由外部 main() 的 emotions 决定更准确，但 build_model 不拿 cfg。
+        # 这里允许配置里显式给 num_class；否则留空，fit 时也能推断。
+        if "num_class" in xgb_params:
+            base_params["num_class"] = int(xgb_params["num_class"])
+
+        base_estimator = XGBClassifier(**base_params)
+
+        if param_grid:
+            search = GridSearchCV(
+                estimator=base_estimator,
+                param_grid=param_grid,
+                cv=int(model_cfg.get("cv", 5)),
+                n_jobs=int(model_cfg.get("n_jobs", -1)),
+            )
+            return SklearnSearchAdapter(search)
+
+        class _XGBNoSearchAdapter:
+            def __init__(self, est, base_params):
+                self.est = est
+                self.base_params = base_params
+
+            def fit(self, X, y):
+                # 若未显式设置 num_class，则在这里自动推断并设置
+                if getattr(self.est, "objective", None) == "multi:softprob" and getattr(self.est, "num_class", None) in (None, 0):
+                    try:
+                        ncls = int(len(set(y)))
+                        self.est.set_params(num_class=ncls)
+                    except Exception:
+                        pass
+                self.est.fit(X, y)
+                return self
+
+            def predict(self, X):
+                return self.est.predict(X)
+
+            def save(self, out_dir: str):
+                os.makedirs(out_dir, exist_ok=True)
+                joblib.dump({"base_params": self.base_params, "model": self.est}, os.path.join(out_dir, "model.joblib"))
+
+        return _XGBNoSearchAdapter(base_estimator, base_params)
+
+    raise ConfigError(f"Unsupported model.type: {mtype} (supported: svm/mlp/rf/xgboost)")
 
 def build_preprocess(pp_cfg: Dict[str, Any]) -> TabularPreprocessor:
     cfg = TabularPreprocessConfig(
