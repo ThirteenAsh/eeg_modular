@@ -11,7 +11,8 @@ class UMAPBoundaryConfig:
     n_neighbors: int = 15
     min_dist: float = 0.1
     metric: str = "euclidean"
-    random_state: int = 42
+    random_state: Optional[int] = 42  # 允许为None，此时可以使用多线程
+    n_jobs: int = -1  # 并行计算线程数，-1表示使用所有可用线程
     grid_res: int = 600
     margin: float = 0.5
 
@@ -84,7 +85,8 @@ def save_umap_svm_decision_boundary(
             n_neighbors=int(cfg.n_neighbors),
             min_dist=float(cfg.min_dist),
             metric=str(cfg.metric),
-            random_state=int(cfg.random_state),
+            random_state=cfg.random_state,  # 不再强制转换为int，允许为None
+            n_jobs=cfg.n_jobs,  # 添加多线程支持
         )
         X_umap = reducer.fit_transform(X)
     
@@ -236,6 +238,8 @@ def save_multi_model_umap_boundary(
         elif model_name == "RF":
             svm = SVC(kernel="poly", C=0.1, gamma="auto")
         elif model_name == "LSTM" or model_name == "CNN":
+            svm = SVC(kernel="rbf", C=5.0, gamma="scale")
+        elif model_name == "XGB" or model_name == "XGBoost":
             svm = SVC(kernel="rbf", C=5.0, gamma="scale")
         else:
             svm = SVC(kernel="linear", C=1.0)

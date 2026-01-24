@@ -1,10 +1,6 @@
-# XGBoost experiment (tabular features)
 seed: 42
 data_dir: ./data
 emotions: [happy, sad, normal]
-
-# optional override; default is the standard 7 csvs
-# csv_files: [att.csv, med.csv, powerspec.csv, combined.csv, filtered.csv, rawwave.csv, sigqual.csv]
 
 split:
   test_size: 0.30
@@ -14,8 +10,6 @@ split:
 preprocess:
   impute_strategy: mean
   scale: true
-  select_k_best: null
-  pca_n_components: null
   augment: true
   noise_std: 0.01
   time_jitter: 0.02
@@ -23,18 +17,19 @@ preprocess:
 model:
   type: xgboost
   cv: 5
-  n_jobs: -1
+  n_jobs: 8            # ✅ 外层并行（CPU推荐4）
+  random_search: true
+  n_iter: 10
 
-  # 这些是“基础参数”（不放进 param_grid 的固定值）
   xgboost:
-    # 训练更稳定/更容易收敛的常用设置
+    device: cpu         # ✅ 先用CPU更稳更快
+    tree_method: hist
+    n_jobs: 1           # ✅ 内层保持1
     objective: multi:softprob
     eval_metric: mlogloss
-    tree_method: auto      # cpu: auto / hist ; gpu: gpu_hist（有GPU再用）
     random_state: 42
 
-    # base params（也可以放到 param_grid 里搜索）
-    n_estimators: 400
+    n_estimators: 600   # ✅ 核心提速点
     max_depth: 6
     learning_rate: 0.05
     subsample: 0.9
@@ -44,10 +39,8 @@ model:
     reg_lambda: 1.0
     reg_alpha: 0.0
 
-  # 网格搜索的参数（别放太大，先跑通再加）
   param_grid:
-    n_estimators: [300, 500]
-    max_depth: [4, 6, 8]
+    max_depth: [3, 4, 6]                # ✅ 删8
     learning_rate: [0.03, 0.05, 0.1]
     subsample: [0.8, 0.9, 1.0]
     colsample_bytree: [0.8, 0.9, 1.0]
@@ -55,8 +48,7 @@ model:
 
 output:
   base_dir: outputs
-  run_name: xgb_baseline
 
 viz:
-  seaborn_confusion_matrix: false  # 使用matplotlib风格的混淆矩阵
-  umap_boundary: false  # 默认关闭单个模型的UMAP生成
+  seaborn_confusion_matrix: true
+  umap_boundary: false

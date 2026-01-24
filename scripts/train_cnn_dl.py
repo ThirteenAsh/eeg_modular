@@ -66,6 +66,14 @@ def main():
 
     num_classes = len(class_names)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"torch version: {torch.__version__}")
+    print(f"cuda available: {torch.cuda.is_available()}")
+    print(f"cuda version: {torch.version.cuda}")
+    print(f"cudnn enabled: {torch.backends.cudnn.enabled}, cudnn version: {torch.backends.cudnn.version()}")
+    print(f"Using device: {device}")
+    logger.info(f"Using device: {device}")
+    logger.info(f"CUDA available: {torch.cuda.is_available()}, cuda version: {torch.version.cuda}")
+    logger.info(f"cuDNN enabled: {torch.backends.cudnn.enabled}, cuDNN version: {torch.backends.cudnn.version()}")
 
     # class weights + focal
     w_cfg = cnn_cfg.get("class_weight", {}) or {}
@@ -112,6 +120,7 @@ def main():
         batch_size=bs,
         lr=float(train_cfg_raw.get("lr", 1e-3)),
         weight_decay=float(train_cfg_raw.get("weight_decay", 1e-3)),
+        num_workers=int(train_cfg_raw.get("num_workers", 4)),
         n_splits=int(train_cfg_raw.get("n_splits", 5)),
         seed=seed,
         use_amp=bool(train_cfg_raw.get("use_amp", False)),
@@ -148,6 +157,7 @@ def main():
         use_labels_for_forward=use_cvae,  # CVAE needs labels in forward
         device=device,
         use_seaborn_confusion_matrix=use_seaborn_cm,
+        run=run
     )
 
     # 绘制UMAP边界图（如果配置启用）

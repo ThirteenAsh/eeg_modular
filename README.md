@@ -136,7 +136,7 @@ viz:
 **使用方法**：
 
 ```bash
-python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml -o outputs/multi_model_umap
+python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml configs/xgb.yaml configs/lstm.yaml -o outputs/multi_model_umap_all
 ```
 
 **输出结果**：
@@ -181,8 +181,17 @@ python -m scripts.train -c configs/mlp.yaml
 ```bash
 python -m scripts.train -c configs/rf.yaml
 ```
+### 4.4 XGBoost模型训练
 
-### 4.4 LSTM模型训练
+**配置文件**：`configs/xgb.yaml`
+
+##### 运行
+
+```bash
+python -m scripts.train -c configs/xgb.yaml
+```
+
+### 4.5 LSTM模型训练
 
 **配置文件**：`configs/lstm.yaml`
 
@@ -191,7 +200,7 @@ python -m scripts.train -c configs/rf.yaml
 python -m scripts.train_lstm_dl -c configs/lstm.yaml
 ```
 
-### 4.5 CNN模型训练
+### 4.6 CNN模型训练
 
 **配置文件**：`configs/cnn.yaml`
 
@@ -200,25 +209,14 @@ python -m scripts.train_lstm_dl -c configs/lstm.yaml
 python -m scripts.train_cnn_dl -c configs/cnn.yaml
 ```
 
-### 4.6 多模型UMAP比较
+### 4.7 多模型UMAP比较
 
 **运行命令**：
 ```bash
 python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml configs/xgb.yaml -o outputs/multi_model_umap
 ```
 
-### 4.7XGBoost 接入说明
 
-本补丁完成：
-
-- scripts/train.py：新增 model.type = xgboost / xgb 分支（支持 GridSearchCV）
-- configs/xgb.yaml：提供同口径配置模板
-
-##### 运行
-
-```bash
-python -m scripts.train -c configs/xgb.yaml
-```
 
 ##### 配置要点
 
