@@ -67,7 +67,6 @@ class HybridAdapter(ModelAdapter):
                 cv=5,
                 stack_method="auto",
                 n_jobs=-1,
-                random_state=self.cfg.random_state,
             )
         else:
             # 使用voting
