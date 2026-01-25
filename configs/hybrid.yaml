@@ -1,0 +1,85 @@
+# Hybrid model with 4 mechanical models (soft voting + stacking)
+seed: 42
+data_dir: ./data
+emotions: [happy, sad, normal]
+
+# optional override; default is the standard 7 csvs
+# csv_files: [att.csv, med.csv, powerspec.csv, combined.csv, filtered.csv, rawwave.csv, sigqual.csv]
+
+split:
+  test_size: 0.30
+  val_size: 0.10
+  random_state: 42
+
+preprocess:
+  impute_strategy: mean
+  scale: true                # ✅ 1) 归一化（仍然由 pipeline 里的 scaler 做）
+  select_k_best: null
+  pca_n_components: null
+  augment: true
+  noise_std: 0.01
+  time_jitter: 0.02
+
+model:
+  type: hybrid
+  voting_method: soft
+  use_stacking: true
+  random_state: 42
+  
+  # MLP configuration
+  mlp_config:
+    cv: 5
+    n_jobs: -1
+    max_iter: 500
+    random_state: 42
+    param_grid:
+      hidden_layer_sizes: [(100,), (100, 50), (200, 100, 50)]
+      activation: [relu, tanh]
+      solver: [adam, sgd]
+      alpha: [0.0001, 0.001]
+  
+  # Random Forest configuration
+  rf_config:
+    cv: 5
+    n_jobs: -1
+    random_state: 42
+    param_grid:
+      n_estimators: [100, 200, 300]
+      max_depth: [None, 10, 20, 30]
+      min_samples_split: [2, 5, 10]
+      min_samples_leaf: [1, 2, 4]
+      max_features: [auto, sqrt, log2]
+  
+  # SVM configuration
+  svm_config:
+    cv: 5
+    n_jobs: -1
+    probability: true
+    random_state: 42
+    param_grid:
+      kernel: [rbf, poly, sigmoid, linear]
+      C: [0.1, 1, 10]
+      gamma: [scale, auto]
+      class_weight: [null, balanced]
+      tol: [0.001, 0.0005]
+      max_iter: [-1, 20000]
+  
+  # XGBoost configuration (4th mechanical model)
+  xgb_config:
+    cv: 5
+    n_jobs: -1
+    random_state: 42
+    param_grid:
+      n_estimators: [100, 200, 300]
+      learning_rate: [0.01, 0.1, 0.3]
+      max_depth: [3, 6, 10]
+      subsample: [0.8, 1.0]
+      colsample_bytree: [0.8, 1.0]
+
+output:
+  base_dir: outputs
+  # run_name: hybrid_model
+
+viz:
+  seaborn_confusion_matrix: true  # 使用seaborn风格的混淆矩阵
+  umap_boundary: false  # 默认关闭单个模型的UMAP生成

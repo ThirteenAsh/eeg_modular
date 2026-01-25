@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -10,7 +10,9 @@ from eeg_emotion.config.loader import load_config, get, require
 from eeg_emotion.features.csv_stats import DEFAULT_CSV_FILES, build_tabular_dataset
 from eeg_emotion.models.sklearn.mlp import MLPAdapter, MLPConfig
 from eeg_emotion.models.sklearn.rf import RFAdapter, RFConfig
-from eeg_emotion.models.sklearn.svm import SVMModel, from_dict
+from eeg_emotion.models.sklearn.svm import SVMModel, from_dict, SVMConfig
+from eeg_emotion.models.sklearn.xgb import XGBAdapter, XGBConfig
+from eeg_emotion.models.sklearn.hybrid import HybridAdapter, HybridConfig
 from eeg_emotion.preprocess.tabular import TabularPreprocessConfig, TabularPreprocessor
 from eeg_emotion.utils.logging import setup_logging
 from eeg_emotion.utils.paths import make_run_paths
@@ -91,9 +93,75 @@ def build_model(model_cfg: Dict[str, Any], model_type: str):
         }
         
         return XGBClassifier(**base_params)
+    elif model_type == "hybrid":
+        from sklearn.ensemble import StackingClassifier, VotingClassifier
+        from sklearn.linear_model import LogisticRegression
+        
+        # 构建混合模型的基础模型
+        # MLP
+        mlp = MLPAdapter(MLPConfig(
+            cv=int(model_cfg.get("mlp_config", {}).get("cv", 5)),
+            n_jobs=int(model_cfg.get("mlp_config", {}).get("n_jobs", -1)),
+            random_state=int(model_cfg.get("random_state", 42)),
+        ))
+        
+        # RF
+        rf = RFAdapter(RFConfig(
+            cv=int(model_cfg.get("rf_config", {}).get("cv", 5)),
+            n_jobs=int(model_cfg.get("rf_config", {}).get("n_jobs", -1)),
+            random_state=int(model_cfg.get("random_state", 42)),
+        ))
+        
+        # SVM
+        svm_config_dict = model_cfg.get("svm_config", {}).copy()
+        for key in ["cv", "n_jobs", "param_grid", "random_state"]:
+            if key in svm_config_dict:
+                del svm_config_dict[key]
+        svm_config_dict["probability"] = True
+        svm_config_dict["solver"] = svm_config_dict.get("solver", "svc")
+        svm = SVMModel(SVMConfig(**svm_config_dict))
+        
+        # XGB
+        xgb = XGBAdapter(XGBConfig(
+            cv=int(model_cfg.get("xgb_config", {}).get("cv", 5)),
+            n_jobs=int(model_cfg.get("xgb_config", {}).get("n_jobs", -1)),
+            random_state=int(model_cfg.get("random_state", 42)),
+        ))
+        
+        # 构建基础模型列表
+        estimators = [
+            ("mlp", mlp.model if hasattr(mlp, "model") and mlp.model else mlp._create_model() if hasattr(mlp, "_create_model") else None),
+            ("rf", rf.model if hasattr(rf, "model") and rf.model else None),
+            ("svm", svm.model),
+            ("xgb", xgb.model if hasattr(xgb, "model") and xgb.model else None),
+        ]
+        
+        # 移除None值
+        estimators = [(name, est) for name, est in estimators if est is not None]
+        
+        voting_method = model_cfg.get("voting_method", "soft")
+        use_stacking = model_cfg.get("use_stacking", True)
+        
+        if use_stacking:
+            # 使用StackingClassifier
+            meta_estimator = LogisticRegression(random_state=int(model_cfg.get("random_state", 42)))
+            return StackingClassifier(
+                estimators=estimators,
+                final_estimator=meta_estimator,
+                cv=5,
+                stack_method="auto",
+                n_jobs=-1,
+            )
+        else:
+            # 使用VotingClassifier
+            return VotingClassifier(
+                estimators=estimators,
+                voting=voting_method,
+                n_jobs=-1,
+            )
     else:
         # 目前只支持sklearn模型，CNN和LSTM是深度学习模型，需要不同的处理方式
-        raise ValueError(f"Unsupported model type: {model_type}. Currently only sklearn models (SVM, MLP, RF, XGBoost) are supported.")
+        raise ValueError(f"Unsupported model type: {model_type}. Currently only sklearn models (SVM, MLP, RF, XGBoost, Hybrid) are supported.")
 
 
 def build_preprocess(pp_cfg: Dict[str, Any]) -> TabularPreprocessor:

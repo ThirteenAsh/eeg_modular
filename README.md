@@ -7,11 +7,12 @@ EEG Emotion是一个基于脑电图(EEG)数据的情感分析模块化工程，�
 ### 1.1 核心功能
 
 - 统一的数据预处理接口
-- 多种模型支持（SVM、MLP、RF、LSTM、CNN等）
+- 多种模型支持（SVM、MLP、RF、XGBoost、LSTM、CNN、混合模型等）
 - 配置驱动的训练流程
 - 丰富的可视化输出
 - 支持多模型比较
 - 统一的输出目录结构
+- 混合模型集成（soft voting + stacking）
 
 ### 1.2 项目结构
 
@@ -47,6 +48,51 @@ model:
   C: 1.0
   gamma: scale
   class_weight: balanced
+
+# 混合模型配置示例
+model:
+  type: hybrid
+  voting_method: soft  # "soft" 或 "hard"
+  use_stacking: true
+  
+  # MLP配置
+  mlp_config:
+    param_grid:
+      hidden_layer_sizes: [(100,), (100, 50)]
+      activation: [relu, tanh]
+      solver: [adam, sgd]
+    cv: 5
+    n_jobs: -1
+    random_state: 42
+  
+  # RF配置
+  rf_config:
+    param_grid:
+      n_estimators: [100, 200]
+      max_depth: [None, 10, 20]
+      min_samples_split: [2, 5]
+    cv: 5
+    n_jobs: -1
+    random_state: 42
+  
+  # SVM配置
+  svm_config:
+    solver: svc
+    probability: true
+    param_grid:
+      kernel: [rbf, linear]
+      C: [0.1, 1, 10]
+      gamma: [scale, auto]
+  
+  # XGBoost配置
+  xgb_config:
+    param_grid:
+      n_estimators: [100, 200]
+      max_depth: [3, 6]
+      learning_rate: [0.01, 0.1]
+    cv: 5
+    n_jobs: -1
+    random_state: 42
 
 # 预处理配置
 preprocess:
@@ -131,12 +177,12 @@ viz:
 
 在单个UMAP投影上绘制多个模型的决策边界，便于直观比较不同模型的决策边界差异。
 
-**注意**：目前只支持sklearn模型（SVM、MLP、RF），CNN和LSTM等深度学习模型需要不同的处理方式，暂不支持。
+**注意**：目前支持sklearn模型（SVM、MLP、RF、XGBoost）和混合模型，CNN和LSTM等深度学习模型需要不同的处理方式，暂不支持。
 
 **使用方法**：
 
 ```bash
-python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml -o outputs/multi_model_umap
+python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml configs/xgb.yaml configs/lstm.yaml -o outputs/multi_model_umap_all
 ```
 
 **输出结果**：
@@ -181,8 +227,17 @@ python -m scripts.train -c configs/mlp.yaml
 ```bash
 python -m scripts.train -c configs/rf.yaml
 ```
+### 4.4 XGBoost模型训练
 
-### 4.4 LSTM模型训练
+**配置文件**：`configs/xgb.yaml`
+
+##### 运行
+
+```bash
+python -m scripts.train -c configs/xgb.yaml
+```
+
+### 4.5 LSTM模型训练
 
 **配置文件**：`configs/lstm.yaml`
 
@@ -191,7 +246,7 @@ python -m scripts.train -c configs/rf.yaml
 python -m scripts.train_lstm_dl -c configs/lstm.yaml
 ```
 
-### 4.5 CNN模型训练
+### 4.6 CNN模型训练
 
 **配置文件**：`configs/cnn.yaml`
 
@@ -200,25 +255,28 @@ python -m scripts.train_lstm_dl -c configs/lstm.yaml
 python -m scripts.train_cnn_dl -c configs/cnn.yaml
 ```
 
-### 4.6 多模型UMAP比较
+### 4.7 混合模型训练
+
+**配置文件**：`configs/hybrid.yaml`
 
 **运行命令**：
 ```bash
-python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml configs/xgb.yaml -o outputs/multi_model_umap
+python -m scripts.train -c configs/hybrid.yaml
 ```
 
-### 4.7XGBoost 接入说明
+**模型说明**：
+- 混合模型集成了4个机械模型：MLP、RF、SVM和XGBoost
+- 支持soft voting和stacking两种集成方式
+- 使用LogisticRegression作为stacking的元分类器
 
-本补丁完成：
+### 4.8 多模型UMAP比较
 
-- scripts/train.py：新增 model.type = xgboost / xgb 分支（支持 GridSearchCV）
-- configs/xgb.yaml：提供同口径配置模板
-
-##### 运行
-
+**运行命令**：
 ```bash
-python -m scripts.train -c configs/xgb.yaml
+python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml configs/xgb.yaml configs/hybrid.yaml -o outputs/multi_model_umap
 ```
+
+
 
 ##### 配置要点
 

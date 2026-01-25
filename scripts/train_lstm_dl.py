@@ -1,16 +1,13 @@
 from __future__ import annotations
-
-import argparse
-import json
-import os
+import argparse, json, os
 from collections import Counter
-
 import numpy as np
-import tensorflow as tf
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
-from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
-from tensorflow.keras.models import Model
 
 from eeg_emotion.config.loader import load_config, require, get
 from eeg_emotion.features.sequence.extract import SequenceFeatureConfig, extract_all_features
@@ -18,21 +15,22 @@ from eeg_emotion.features.sequence.augment import (
     augment_class_samples, mixup_augment, compute_sample_stats, apply_gaussian_noise_batch
 )
 from eeg_emotion.preprocess.sequence import SequencePreprocessConfig, SequencePreprocessor
-from eeg_emotion.models.tf.lstm_ae import LSTMAEConfig, build_lstm_autoencoder
-from eeg_emotion.models.tf.lstm_clf import (
-    build_encoded_mlp_classifier, build_sequence_bilstm_classifier, BiLSTMClassifierConfig
-)
-from eeg_emotion.train.metrics import classification_metrics
 from eeg_emotion.utils.logging import setup_logging
 from eeg_emotion.utils.paths import make_run_paths
+from eeg_emotion.train.metrics import classification_metrics
 from eeg_emotion.viz.confusion_matrix import save_confusion_matrix
+from eeg_emotion.viz.seaborn_cm import save_confusion_matrix_seaborn
 from eeg_emotion.viz.umap_boundary import save_umap_svm_decision_boundary
+
+from eeg_emotion.models.torch.lstm_ae import LSTMAutoEncoder
+from eeg_emotion.models.torch.lstm_clf import BiLSTMClassifier, MLPClassifier
 
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("-c", "--config", required=True)
     return p.parse_args()
+
 
 
 def plot_training_curves(history, out_path: str) -> None:
@@ -42,9 +40,9 @@ def plot_training_curves(history, out_path: str) -> None:
 
     fig = plt.figure(figsize=(10, 4))
     ax1 = fig.add_subplot(1, 2, 1)
-    ax1.plot(history.history.get("loss", []), label="train_loss")
-    if "val_loss" in history.history:
-        ax1.plot(history.history["val_loss"], label="val_loss")
+    ax1.plot(history.get("loss", []), label="train_loss")
+    if "val_loss" in history:
+        ax1.plot(history["val_loss"], label="val_loss")
     ax1.set_title("Loss Curve")
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("Loss")
@@ -52,10 +50,10 @@ def plot_training_curves(history, out_path: str) -> None:
     ax1.legend()
 
     ax2 = fig.add_subplot(1, 2, 2)
-    if "accuracy" in history.history:
-        ax2.plot(history.history["accuracy"], label="train_acc")
-    if "val_accuracy" in history.history:
-        ax2.plot(history.history["val_accuracy"], label="val_acc")
+    if "accuracy" in history:
+        ax2.plot(history["accuracy"], label="train_acc")
+    if "val_accuracy" in history:
+        ax2.plot(history["val_accuracy"], label="val_acc")
     ax2.set_title("Accuracy Curve")
     ax2.set_xlabel("Epoch")
     ax2.set_ylabel("Accuracy")
@@ -67,16 +65,238 @@ def plot_training_curves(history, out_path: str) -> None:
     plt.close(fig)
 
 
+@torch.no_grad()
+def encode_dataset(ae: LSTMAutoEncoder, X: np.ndarray, device: torch.device, bs: int = 256):
+    ae.eval()
+    zs = []
+    dl = DataLoader(TensorDataset(torch.from_numpy(X).float()), batch_size=bs, shuffle=False)
+    for (x,) in dl:
+        x = x.to(device, non_blocking=True)
+        z = ae.encode(x)
+        zs.append(z.detach().cpu().numpy())
+    return np.concatenate(zs, axis=0)
+
+
+def train_ae(ae, X_train, cfg, device, out_path, logger, run):
+    ae_cfg = get(cfg, "autoencoder", {})
+    epochs = int(ae_cfg.get("epochs", 100))
+    bs = int(ae_cfg.get("batch_size", 32))
+    val_split = float(ae_cfg.get("val_split", 0.1))
+    lr = float(ae_cfg.get("lr", 1e-3))
+
+    # split train/val
+    n = X_train.shape[0]
+    idx = np.arange(n)
+    np.random.shuffle(idx)
+    n_val = max(1, int(n * val_split))
+    val_idx, tr_idx = idx[:n_val], idx[n_val:]
+
+    Xtr = torch.from_numpy(X_train[tr_idx]).float()
+    Xva = torch.from_numpy(X_train[val_idx]).float()
+
+    tr_loader = DataLoader(TensorDataset(Xtr, Xtr), batch_size=bs, shuffle=True, pin_memory=True)
+    va_loader = DataLoader(TensorDataset(Xva, Xva), batch_size=bs, shuffle=False, pin_memory=True)
+
+    optim = torch.optim.Adam(ae.parameters(), lr=lr, weight_decay=float(ae_cfg.get("weight_decay", 0.0)))
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optim, mode="min", factor=0.5, patience=int(ae_cfg.get("lr_patience", 8)),
+        min_lr=float(ae_cfg.get("min_lr", 1e-6)), verbose=True
+    )
+    crit = nn.MSELoss()
+
+    best = 1e18
+    patience = int(ae_cfg.get("early_stop_patience", 20))
+    bad = 0
+
+    use_amp = bool(get(cfg, "train", {}).get("use_amp", False))  # 也可单独给AE开关
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+
+    # 记录训练历史
+    history = {
+        "loss": [],
+        "val_loss": []
+    }
+
+    for ep in range(1, epochs + 1):
+        ae.train()
+        tr_loss = 0.0
+        for xb, yb in tr_loader:
+            xb = xb.to(device, non_blocking=True)
+            yb = yb.to(device, non_blocking=True)
+            optim.zero_grad(set_to_none=True)
+            with torch.amp.autocast('cuda', enabled=use_amp):
+                recon, _ = ae(xb)
+                loss = crit(recon, yb)
+            scaler.scale(loss).backward()
+            scaler.step(optim)
+            scaler.update()
+            tr_loss += loss.item() * xb.size(0)
+        tr_loss /= len(tr_loader.dataset)
+
+        ae.eval()
+        va_loss = 0.0
+        with torch.no_grad():
+            for xb, yb in va_loader:
+                xb = xb.to(device, non_blocking=True)
+                yb = yb.to(device, non_blocking=True)
+                recon, _ = ae(xb)
+                loss = crit(recon, yb)
+                va_loss += loss.item() * xb.size(0)
+        va_loss /= len(va_loader.dataset)
+
+        # 记录历史
+        history["loss"].append(tr_loss)
+        history["val_loss"].append(va_loss)
+
+        sched.step(va_loss)
+        logger.info(f"[AE] epoch={ep} train_loss={tr_loss:.6f} val_loss={va_loss:.6f}")
+
+        if va_loss < best - 1e-6:
+            best = va_loss
+            bad = 0
+            torch.save(ae.state_dict(), out_path)
+        else:
+            bad += 1
+            if bad >= patience:
+                logger.info(f"[AE] Early stop at epoch={ep}")
+                break
+
+    # 绘制训练曲线
+    plot_training_curves(history, os.path.join(run.figures_dir, "training_curves_ae.png"))
+    logger.info("✅ AE training curves saved")
+
+
+def train_clf(model, X, y, cfg, device, out_path, logger, run, class_weight=None):
+    clf_cfg = get(cfg, "classifier", {})
+    epochs = int(clf_cfg.get("epochs", 200))
+    bs = int(clf_cfg.get("batch_size", 16))
+    val_split = float(clf_cfg.get("val_split", 0.2))
+    lr = float(clf_cfg.get("initial_lr", 1e-3))
+
+    # split train/val
+    n = X.shape[0]
+    idx = np.arange(n)
+    np.random.shuffle(idx)
+    n_val = max(1, int(n * val_split))
+    val_idx, tr_idx = idx[:n_val], idx[n_val:]
+
+    Xtr = torch.from_numpy(X[tr_idx]).float()
+    ytr = torch.from_numpy(y[tr_idx]).long()
+    Xva = torch.from_numpy(X[val_idx]).float()
+    yva = torch.from_numpy(y[val_idx]).long()
+
+    tr_loader = DataLoader(TensorDataset(Xtr, ytr), batch_size=bs, shuffle=True, pin_memory=True)
+    va_loader = DataLoader(TensorDataset(Xva, yva), batch_size=bs, shuffle=False, pin_memory=True)
+
+    optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=float(clf_cfg.get("weight_decay", 0.0)))
+    # cosine 可加，这里先对齐你 TF 的 ReduceLROnPlateau/early stop
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optim, mode="min", factor=0.5, patience=int(clf_cfg.get("lr_patience", 10)),
+        min_lr=float(clf_cfg.get("min_lr", 1e-6)), verbose=True
+    )
+
+    if class_weight is not None:
+        w = torch.tensor(class_weight, dtype=torch.float32, device=device)
+        crit = nn.CrossEntropyLoss(weight=w, label_smoothing=float(clf_cfg.get("label_smoothing", 0.0)))
+    else:
+        crit = nn.CrossEntropyLoss(label_smoothing=float(clf_cfg.get("label_smoothing", 0.0)))
+
+    best = 1e18
+    patience = int(clf_cfg.get("early_stop_patience", 30))
+    bad = 0
+
+    use_amp = bool(get(cfg, "train", {}).get("use_amp", False))
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+
+    # 记录训练历史
+    history = {
+        "loss": [],
+        "val_loss": [],
+        "accuracy": [],
+        "val_accuracy": []
+    }
+
+    for ep in range(1, epochs + 1):
+        model.train()
+        tr_loss = 0.0
+        tr_correct = 0
+        tr_total = 0
+        for xb, yb in tr_loader:
+            xb = xb.to(device, non_blocking=True)
+            yb = yb.to(device, non_blocking=True)
+            optim.zero_grad(set_to_none=True)
+            with torch.amp.autocast('cuda', enabled=use_amp):
+                logits = model(xb)
+                loss = crit(logits, yb)
+            scaler.scale(loss).backward()
+            scaler.step(optim)
+            scaler.update()
+            tr_loss += loss.item() * xb.size(0)
+            # 计算准确率
+            tr_pred = logits.argmax(dim=1)
+            tr_correct += (tr_pred == yb).sum().item()
+            tr_total += yb.size(0)
+        tr_loss /= len(tr_loader.dataset)
+        tr_acc = tr_correct / tr_total
+
+        model.eval()
+        va_loss = 0.0
+        va_correct = 0
+        va_total = 0
+        with torch.no_grad():
+            for xb, yb in va_loader:
+                xb = xb.to(device, non_blocking=True)
+                yb = yb.to(device, non_blocking=True)
+                logits = model(xb)
+                loss = crit(logits, yb)
+                va_loss += loss.item() * xb.size(0)
+                # 计算准确率
+                va_pred = logits.argmax(dim=1)
+                va_correct += (va_pred == yb).sum().item()
+                va_total += yb.size(0)
+        va_loss /= len(va_loader.dataset)
+        va_acc = va_correct / va_total
+
+        # 记录历史
+        history["loss"].append(tr_loss)
+        history["val_loss"].append(va_loss)
+        history["accuracy"].append(tr_acc)
+        history["val_accuracy"].append(va_acc)
+
+        sched.step(va_loss)
+        logger.info(f"[CLF] epoch={ep} train_loss={tr_loss:.6f} val_loss={va_loss:.6f} train_acc={tr_acc:.4f} val_acc={va_acc:.4f}")
+
+        if va_loss < best - 1e-6:
+            best = va_loss
+            bad = 0
+            torch.save(model.state_dict(), out_path)
+        else:
+            bad += 1
+            if bad >= patience:
+                logger.info(f"[CLF] Early stop at epoch={ep}")
+                break
+
+    # 绘制训练曲线
+    plot_training_curves(history, os.path.join(run.figures_dir, "training_curves_clf.png"))
+    logger.info("✅ Classifier training curves saved")
+
+
 def main():
     args = parse_args()
     cfg = load_config(args.config)
 
+    # ---- device ----
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.backends.cudnn.benchmark = True  # 输入shape固定时更快
+    print("torch:", torch.__version__, "cuda:", torch.version.cuda, "device:", device)
+    print("cudnn.enabled:", torch.backends.cudnn.enabled, "cudnn.version:", torch.backends.cudnn.version())
+
     out_cfg = get(cfg, "output", {})
-    # 不使用配置文件中的run_name，所有模型都使用时间戳作为输出目录名
     run = make_run_paths(base_dir=str(out_cfg.get("base_dir", "outputs")), run_name=None)
     logger = setup_logging(os.path.join(run.logs_dir, "train.log"))
-    # 记录最终使用的run_dir
     logger.info(f"📁 使用的输出目录: {run.run_dir}")
+    logger.info(f"torch: {torch.__version__}, cuda: {torch.version.cuda}, device: {device}")
+    logger.info(f"cudnn.enabled: {torch.backends.cudnn.enabled}, cudnn.version: {torch.backends.cudnn.version()}")
 
     data_dir = str(require(cfg, "data_dir", str))
     emotions = require(cfg, "emotions", list)
@@ -92,6 +312,7 @@ def main():
     ))
     logger.info("Extracted X=%s y=%s labels=%s", X.shape, y.shape, dict(Counter(y)))
 
+    # split
     split_cfg = get(cfg, "split", {})
     test_size = float(split_cfg.get("test_size", 0.30))
     seed = int(split_cfg.get("seed", 42))
@@ -100,28 +321,25 @@ def main():
     )
     logger.info("Split train=%s test=%s", X_train.shape, X_test.shape)
 
+    # augment (train only)
     aug_cfg = get(cfg, "augment", {})
     aug_noise = get(aug_cfg, "noise", {}) or {}
     noise_mean = float(aug_noise.get("mean", 0.0))
     noise_std = float(aug_noise.get("std", 0.01))
-
     if bool(aug_cfg.get("enabled", True)):
         sad_times = int(aug_cfg.get("sad_times", 3))
         other_times = int(aug_cfg.get("other_times", 3))
         X_train, y_train = augment_class_samples(
             X_train, y_train, target_labels=[1],
-            augment_times=sad_times,
-            noise_mean=noise_mean,
-            noise_std=noise_std,
+            augment_times=sad_times, noise_mean=noise_mean, noise_std=noise_std,
         )
         X_train, y_train = augment_class_samples(
             X_train, y_train, target_labels=[0, 2],
-            augment_times=other_times,
-            noise_mean=noise_mean,
-            noise_std=noise_std,
+            augment_times=other_times, noise_mean=noise_mean, noise_std=noise_std,
         )
         logger.info("After train-only augmentation labels=%s", dict(Counter(y_train)))
 
+    # preprocess
     pp_cfg = get(cfg, "preprocess", {})
     pp = SequencePreprocessor(SequencePreprocessConfig(
         impute_strategy=str(pp_cfg.get("impute_strategy", "mean")),
@@ -133,16 +351,12 @@ def main():
     pp.save(run.artifacts_dir)
     logger.info("After preprocess train=%s test=%s", X_train.shape, X_test.shape)
 
-    num_classes = len(emotions)
-    y_train_cat = tf.keras.utils.to_categorical(y_train, num_classes=num_classes)
-
-    # Gaussian noise injection (train-only, after preprocess)
+    # gaussian noise (train only)
     noise_cfg = get(cfg, "gaussian_noise", {}) or {}
     noise_enabled = bool(noise_cfg.get("enabled", False))
     noise_apply_to = set(noise_cfg.get("apply_to", ["ae", "clf"]))
     noise_mean2 = float(noise_cfg.get("mean", 0.0))
     noise_std2 = float(noise_cfg.get("std", 0.01))
-
     X_train_for_ae = X_train
     X_train_for_clf_seq = X_train
     if noise_enabled and noise_std2 > 0:
@@ -150,135 +364,89 @@ def main():
             X_train_for_ae = apply_gaussian_noise_batch(X_train_for_ae, mean=noise_mean2, std=noise_std2)
         if "clf" in noise_apply_to:
             X_train_for_clf_seq = apply_gaussian_noise_batch(X_train_for_clf_seq, mean=noise_mean2, std=noise_std2)
-        logger.info("Applied gaussian noise: mean=%.4f std=%.4f apply_to=%s", noise_mean2, noise_std2, sorted(list(noise_apply_to)))
+        logger.info("Applied gaussian noise: mean=%.4f std=%.4f apply_to=%s",
+                    noise_mean2, noise_std2, sorted(list(noise_apply_to)))
 
-    # AE (BiLSTM + configurable dropout)
+    # ---- AE train ----
     ae_cfg = get(cfg, "autoencoder", {})
-    ae_epochs = int(ae_cfg.get("epochs", 100))
     latent_dim = int(ae_cfg.get("latent_dim", 128))
+    ae = LSTMAutoEncoder(
+        input_dim=X_train_for_ae.shape[2],
+        hidden_dim=int(ae_cfg.get("enc_units") or 128),
+        latent_dim=latent_dim,
+        num_layers=int(ae_cfg.get("enc_layers", 2)),
+        dropout=float(ae_cfg.get("enc_dropout", 0.25)),
+        bidir_decoder=bool(ae_cfg.get("use_bidirectional_decoder", True)),
+    ).to(device)
 
-    autoencoder = build_lstm_autoencoder(
-        (time_steps, X_train_for_ae.shape[2]),
-        LSTMAEConfig(
-            latent_dim=latent_dim,
-            enc_units=ae_cfg.get("enc_units"),
-            enc_layers=int(ae_cfg.get("enc_layers", 2)),
-            enc_dropout=float(ae_cfg.get("enc_dropout", ae_cfg.get("dropout_rate", 0.2))),
-            use_bidirectional_decoder=bool(ae_cfg.get("use_bidirectional_decoder", True)),
-            dec_units=ae_cfg.get("dec_units"),
-            dec_dropout=float(ae_cfg.get("dec_dropout", ae_cfg.get("dropout_rate", 0.2))),
-            lr=float(ae_cfg.get("lr", 1e-3)),
-        )
-    )
-
-    ae_callbacks = [
-        ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=int(ae_cfg.get("lr_patience", 8)), min_lr=float(ae_cfg.get("min_lr", 1e-6)), verbose=1),
-        EarlyStopping(monitor="val_loss", patience=int(ae_cfg.get("early_stop_patience", 20)), restore_best_weights=True, verbose=1),
-        ModelCheckpoint(os.path.join(run.models_dir, "best_autoencoder.weights.h5"), save_best_only=True, save_weights_only=True, monitor="val_loss", verbose=1),
-    ]
-
+    ae_ckpt = os.path.join(run.models_dir, "best_autoencoder.pt")
     logger.info("Training AE...")
-    history_ae = autoencoder.fit(
-        X_train_for_ae, X_train_for_ae,
-        epochs=ae_epochs,
-        batch_size=int(ae_cfg.get("batch_size", 32)),
-        validation_split=float(ae_cfg.get("val_split", 0.1)),
-        verbose=2,
-        callbacks=ae_callbacks,
-    )
-    plot_training_curves(history_ae, os.path.join(run.figures_dir, "training_curves_ae.png"))
+    train_ae(ae, X_train_for_ae, cfg, device, ae_ckpt, logger, run)
+    ae.load_state_dict(torch.load(ae_ckpt, map_location=device, weights_only=True))
 
-    encoder_model = Model(inputs=autoencoder.input, outputs=autoencoder.get_layer("encoder_output").output)
-    encoder_model.save(os.path.join(run.models_dir, "trained_encoder.keras"))
+    # encode
+    X_train_enc = encode_dataset(ae, X_train, device=device, bs=256)
+    X_test_enc = encode_dataset(ae, X_test, device=device, bs=256)
 
-    X_train_enc = encoder_model.predict(X_train, verbose=0)
-    X_test_enc = encoder_model.predict(X_test, verbose=0)
-
+    # sample_stats
     stats_cfg = get(cfg, "sample_stats", {})
     if bool(stats_cfg.get("enabled", True)):
         X_train_enc = np.concatenate([X_train_enc, compute_sample_stats(X_train)], axis=1)
         X_test_enc = np.concatenate([X_test_enc, compute_sample_stats(X_test)], axis=1)
 
-    # Classifier: BiLSTM (sequence) OR MLP (encoded)
+    # classifier mode
     clf_cfg = get(cfg, "classifier", {})
     clf_mode = str(clf_cfg.get("mode", "bilstm")).lower()
-    clf_epochs = int(clf_cfg.get("epochs", 200))
-    clf_batch = int(clf_cfg.get("batch_size", 16))
-    initial_lr = float(clf_cfg.get("initial_lr", 1e-3))
-    use_cosine_decay = bool(clf_cfg.get("use_cosine_decay", True))
+    num_classes = len(emotions)
 
-    if use_cosine_decay:
-        steps_per_epoch = max(1, int(np.ceil((X_train_for_clf_seq.shape[0] if clf_mode == "bilstm" else X_train_enc.shape[0]) / clf_batch)))
-        decay_steps = int(clf_epochs * steps_per_epoch)
-        lr = tf.keras.optimizers.schedules.CosineDecay(initial_learning_rate=initial_lr, decay_steps=decay_steps)
-        lr_is_schedule = True
-    else:
-        lr = initial_lr
-        lr_is_schedule = False
-
+    # mixup
     mix_cfg = get(cfg, "mixup", {}) or {}
     mix_ratio = float(mix_cfg.get("augment_ratio", 1.0))
     mix_alpha = float(mix_cfg.get("alpha", 0.3))
     use_mixup = bool(mix_cfg.get("enabled", True)) and mix_ratio > 0
 
     if clf_mode == "bilstm":
-        bilstm_cfg = BiLSTMClassifierConfig(
-            lstm_units=int(clf_cfg.get("lstm_units", 128)),
-            num_layers=int(clf_cfg.get("num_layers", 2)),
-            dropout=float(clf_cfg.get("dropout", 0.3)),
-            recurrent_dropout=float(clf_cfg.get("recurrent_dropout", 0.0)),
-            pooling=str(clf_cfg.get("pooling", "avgmax")),
-            label_smoothing=float(clf_cfg.get("label_smoothing", 0.05)),
-        )
-        Xtr, Ytr = X_train_for_clf_seq, y_train_cat
+        Xtr = X_train_for_clf_seq
+        ytr = y_train
         if use_mixup:
-            Xtr, Ytr = mixup_augment(Xtr, Ytr, alpha=mix_alpha, augment_ratio=mix_ratio)
-            logger.info("After mixup (seq) X=%s y=%s", Xtr.shape, Ytr.shape)
-        classifier = build_sequence_bilstm_classifier((time_steps, X_train_for_clf_seq.shape[2]), num_classes, lr=lr, cfg=bilstm_cfg)
+            # 你现有 mixup_augment 是 numpy 版，默认对 one-hot 更友好；
+            # 这里为了最小改动：先不对 PyTorch CE 走 mixup（后续可改成 soft-label CE）。
+            logger.info("Mixup for torch CE not enabled by default (keep parity first).")
+        model = BiLSTMClassifier(
+            input_dim=X_train_for_clf_seq.shape[2],
+            num_classes=num_classes,
+            hidden=int(clf_cfg.get("lstm_units", 128)),
+            num_layers=int(clf_cfg.get("num_layers", 2)),
+            dropout=float(clf_cfg.get("dropout", 0.35)),
+            pooling=str(clf_cfg.get("pooling", "avgmax")),
+        ).to(device)
         X_test_input = X_test
         y_eval = y_test
     else:
-        Xtr, Ytr = X_train_enc, y_train_cat
-        if use_mixup:
-            Xtr, Ytr = mixup_augment(Xtr, Ytr, alpha=mix_alpha, augment_ratio=mix_ratio)
-            logger.info("After mixup (enc) X=%s y=%s", Xtr.shape, Ytr.shape)
-        classifier = build_encoded_mlp_classifier(X_train_enc.shape[1], num_classes, lr=lr)
+        Xtr = X_train_enc
+        ytr = y_train
+        model = MLPClassifier(in_dim=X_train_enc.shape[1], num_classes=num_classes,
+                              dropout=float(clf_cfg.get("dropout", 0.35))).to(device)
         X_test_input = X_test_enc
         y_eval = y_test
 
-    use_class_weight = (not use_mixup) or float(mix_cfg.get("augment_ratio", 0)) == 0
-    class_weight_dict = None
-    if use_class_weight:
+    # class_weight（保持你 TF 逻辑：mixup 时可不使用）
+    class_weight = None
+    if not use_mixup:
         cw = compute_class_weight("balanced", classes=np.unique(y_train), y=y_train)
-        class_weight_dict = {int(cls): float(w) for cls, w in zip(np.unique(y_train), cw)}
+        class_weight = cw  # numpy array
 
-    clf_callbacks = [
-        EarlyStopping(monitor="val_loss", patience=int(clf_cfg.get("early_stop_patience", 30)), restore_best_weights=True, verbose=1),
-        ModelCheckpoint(os.path.join(run.models_dir, "best_classifier.weights.h5"), save_best_only=True, save_weights_only=True, monitor="val_loss", verbose=1),
-    ]
-    if not lr_is_schedule:
-        clf_callbacks.insert(0, ReduceLROnPlateau(
-            monitor="val_loss",
-            factor=0.5,
-            patience=int(clf_cfg.get("lr_patience", 10)),
-            min_lr=float(clf_cfg.get("min_lr", 1e-6)),
-            verbose=1,
-        ))
+    clf_ckpt = os.path.join(run.models_dir, "best_classifier.pt")
+    logger.info("Training classifier... mode=%s", clf_mode)
+    train_clf(model, Xtr, ytr, cfg, device, clf_ckpt, logger, run, class_weight=class_weight)
+    model.load_state_dict(torch.load(clf_ckpt, map_location=device, weights_only=True))
+    model.eval()
 
-    logger.info("Training classifier... mode=%s use_cosine_decay=%s", clf_mode, use_cosine_decay)
-    history_clf = classifier.fit(
-        Xtr, Ytr,
-        validation_split=float(clf_cfg.get("val_split", 0.2)),
-        epochs=clf_epochs,
-        batch_size=clf_batch,
-        class_weight=class_weight_dict,
-        callbacks=clf_callbacks,
-        verbose=2,
-    )
-    plot_training_curves(history_clf, os.path.join(run.figures_dir, "training_curves_clf.png"))
-
-    classifier.load_weights(os.path.join(run.models_dir, "best_classifier.weights.h5"))
-    y_pred = np.argmax(classifier.predict(X_test_input, verbose=0), axis=1)
+    # eval
+    with torch.no_grad():
+        xb = torch.from_numpy(X_test_input).float().to(device)
+        logits = model(xb)
+        y_pred = logits.argmax(dim=1).cpu().numpy()
 
     m = classification_metrics(y_eval, y_pred, class_names=list(emotions))
     logger.info("Test accuracy: %.4f", m["accuracy"])
@@ -291,7 +459,6 @@ def main():
     
     if use_seaborn_cm:
         try:
-            from eeg_emotion.viz.seaborn_cm import save_confusion_matrix_seaborn
             save_confusion_matrix_seaborn(
                 y_true=y_eval,
                 y_pred=y_pred,
@@ -303,7 +470,6 @@ def main():
             logger.info("✅ Seaborn风格混淆矩阵已保存")
         except ImportError as e:
             logger.warning(f"⚠️ seaborn未安装，退回到matplotlib风格混淆矩阵: {e}")
-            from eeg_emotion.viz.confusion_matrix import save_confusion_matrix
             save_confusion_matrix(
                 y_true=y_eval,
                 y_pred=y_pred,
@@ -314,7 +480,6 @@ def main():
             )
             logger.info("✅ Matplotlib风格混淆矩阵已保存")
     else:
-        from eeg_emotion.viz.confusion_matrix import save_confusion_matrix
         save_confusion_matrix(
             y_true=y_eval,
             y_pred=y_pred,
@@ -362,17 +527,7 @@ def main():
     out = {
         "accuracy": m["accuracy"],
         "report": m["report"],
-        "best_params": {
-            "classifier_mode": clf_mode,
-            "time_steps": time_steps,
-            "latent_dim": latent_dim,
-            "pca_n_components": pp_cfg.get("pca_n_components", 64),
-            "mixup_alpha": mix_alpha,
-            "mixup_ratio": mix_ratio,
-            "augment": bool(aug_cfg.get("enabled", True)),
-            "gaussian_noise": {"enabled": noise_enabled, "apply_to": sorted(list(noise_apply_to)), "std": noise_std2},
-            "use_cosine_decay": use_cosine_decay,
-        },
+        "best_params": {"classifier_mode": clf_mode, "time_steps": time_steps, "latent_dim": latent_dim},
         "config_path": os.path.abspath(args.config),
     }
     with open(os.path.join(run.run_dir, "metrics.json"), "w", encoding="utf-8") as f:
