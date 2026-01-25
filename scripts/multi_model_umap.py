@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from eeg_emotion.config.loader import load_config, get, require
+from eeg_emotion.config.loader import ConfigError, load_config, get, require
 from eeg_emotion.features.csv_stats import DEFAULT_CSV_FILES, build_tabular_dataset
 from eeg_emotion.models.sklearn.mlp import MLPAdapter, MLPConfig
 from eeg_emotion.models.sklearn.rf import RFAdapter, RFConfig
@@ -234,13 +234,20 @@ def main() -> None:
     # 加载所有配置文件，构建模型
     for config_path in args.configs:
         cfg = load_config(config_path)
-        model_dict = require(cfg, "model", dict)
-        model_type = str(require(model_dict, "type", str)).lower()
-        model_name = model_type.upper()
         
-        # 构建模型
-        model = build_model(model_dict, model_type)
-        models[model_name] = model
+        try:
+            model_dict = require(cfg, "model", dict)
+            model_type = str(require(model_dict, "type", str)).lower()
+            model_name = model_type.upper()
+            
+            # 构建模型
+            model = build_model(model_dict, model_type)
+            models[model_name] = model
+            logger.info("✅ Added %s model from %s", model_name, config_path)
+        except ConfigError as e:
+            logger.warning("⚠️ Skipping %s: %s", config_path, e)
+        except ValueError as e:
+            logger.warning("⚠️ Skipping %s: %s", config_path, e)
     
     # 训练所有模型
     for model_name, model in models.items():
