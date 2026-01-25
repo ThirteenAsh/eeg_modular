@@ -48,7 +48,7 @@ def load_cvae(
     CVAE = getattr(mod, "CVAE")
 
     model = CVAE(input_dim=input_dim, latent_dim=int(cfg.latent_dim), num_classes=int(num_classes))
-    ckpt = torch.load(cfg.checkpoint, map_location=device)
+    ckpt = torch.load(cfg.checkpoint, map_location=device, weights_only=True)
     state = ckpt.get("model_state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
     model.load_state_dict(state, strict=bool(cfg.strict))
     model.eval()

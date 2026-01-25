@@ -42,5 +42,5 @@ output:
   # run_name: svm_baseline
 
 viz:
-  seaborn_confusion_matrix: false  # 使用matplotlib风格的混淆矩阵
+  seaborn_confusion_matrix: true  # 使用seaborn风格的混淆矩阵
   umap_boundary: false  # 默认关闭单个模型的UMAP生成

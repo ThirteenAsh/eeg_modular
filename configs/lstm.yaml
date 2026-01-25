@@ -2,6 +2,9 @@ seed: 42
 
 output:
   base_dir: outputs
+
+output:
+  base_dir: outputs
   # run_name: lstm_bilstm_noise
 
 data_dir: ./data
@@ -16,7 +19,7 @@ split:
 
 augment:
   enabled: true
-  sad_times: 3
+  sad_times: 4  # 增加sad类的增强倍数
   other_times: 3
   noise:  # 这是加在原始数据上的噪声
     mean: 0.0
@@ -32,21 +35,24 @@ gaussian_noise:
   enabled: true
   apply_to: [ae, clf]
   mean: 0.0
-  std: 0.01
+  std: 0.015  # 增加噪声强度，增强泛化能力
+
+train:
+  use_amp: true   # ✅ torch GPU 上建议开（一般不影响最终精度，更多是数值差异）
 
 autoencoder:
   epochs: 100
-  batch_size: 32
+  batch_size: 256
   val_split: 0.10
   latent_dim: 128
   enc_layers: 2
-  enc_units: null
-  enc_dropout: 0.25
+  enc_units: 128
+  enc_dropout: 0.4
   use_bidirectional_decoder: true
   dec_units: null
-  dec_dropout: 0.25
+  dec_dropout: 0.4
   lr: 0.001
-  lr_patience: 8
+  lr_patience: 5  # 减小lr patience，更快调整学习率
   early_stop_patience: 20
   min_lr: 1e-6
 
@@ -55,29 +61,26 @@ sample_stats:
 
 mixup:
   enabled: true
-  alpha: 0.3
+  alpha: 0.4  # 调整mixup参数
   augment_ratio: 1.0
 
 classifier:
   mode: bilstm
   epochs: 200
-  batch_size: 16
+  batch_size: 256
   val_split: 0.20
-  initial_lr: 0.001
-  use_cosine_decay: true
-  lr_patience: 10
+  initial_lr: 0.0008  # 微调学习率
+  use_cosine_decay: false
+  lr_patience: 3  # 减小lr patience，更快调整学习率
   early_stop_patience: 30
   min_lr: 1e-6
 
-  # 这是双向LSTM的参数
   lstm_units: 128
   num_layers: 2
-  dropout: 0.35
-  recurrent_dropout: 0.0
+  dropout: 0.5
   pooling: avgmax
-  label_smoothing: 0.05
+  label_smoothing: 0.03  # 微调标签平滑
 
-# 可视化配置
 viz:
-  seaborn_confusion_matrix: false  # 使用matplotlib风格的混淆矩阵
-  umap_boundary: false  # 默认关闭单个模型的UMAP生成
+  seaborn_confusion_matrix: true  # 使用seaborn风格的混淆矩阵
+  umap_boundary: false

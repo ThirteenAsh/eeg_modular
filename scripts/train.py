@@ -13,11 +13,13 @@ from eeg_emotion.config.loader import ConfigError, load_config, get, require
 from eeg_emotion.features.csv_stats import DEFAULT_CSV_FILES, build_tabular_dataset
 from eeg_emotion.models.sklearn.mlp import MLPAdapter, MLPConfig
 from eeg_emotion.models.sklearn.rf import RFAdapter, RFConfig
-from sklearn.model_selection import GridSearchCV
+from eeg_emotion.models.sklearn.svm import SVMModel, from_dict, SVMConfig
+from eeg_emotion.models.sklearn.xgb import XGBAdapter, XGBConfig
+from eeg_emotion.models.sklearn.hybrid import HybridAdapter, HybridConfig
+
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 import joblib
 from xgboost import XGBClassifier
-
-from eeg_emotion.models.sklearn.svm import SVMModel, from_dict
 
 from eeg_emotion.preprocess.tabular import TabularPreprocessConfig, TabularPreprocessor
 from eeg_emotion.train.metrics import classification_metrics
@@ -34,8 +36,8 @@ class SklearnSearchAdapter:
         self.best_params_ = None
         self.best_score_ = None
 
-    def fit(self, X, y):
-        self.search.fit(X, y)
+    def fit(self, X, y, **fit_params):
+        self.search.fit(X, y, **fit_params)
         self.best_params_ = getattr(self.search, "best_params_", None)
         self.best_score_ = getattr(self.search, "best_score_", None)
         return self
@@ -127,7 +129,7 @@ def build_model(model_cfg: Dict[str, Any]):
         # 基础参数（不在 param_grid 里的部分）
         # 注意：多分类需要 objective + num_class
         base_params = {
-            "n_estimators": int(xgb_params.get("n_estimators", 300)),
+            "n_estimators": int(xgb_params.get("n_estimators", 5000)),  # 配合 early stopping，不会真跑满
             "max_depth": int(xgb_params.get("max_depth", 6)),
             "learning_rate": float(xgb_params.get("learning_rate", 0.05)),
             "subsample": float(xgb_params.get("subsample", 0.9)),
@@ -138,9 +140,12 @@ def build_model(model_cfg: Dict[str, Any]):
             "reg_alpha": float(xgb_params.get("reg_alpha", 0.0)),
             "objective": str(xgb_params.get("objective", "multi:softprob")),
             "eval_metric": str(xgb_params.get("eval_metric", "mlogloss")),
-            "tree_method": str(xgb_params.get("tree_method", "auto")),
+            "tree_method": str(xgb_params.get("tree_method", "hist")),  # GPU 推荐 hist
+            "device": str(xgb_params.get("device", "cuda")),  # 启用 GPU 加速
             "random_state": int(xgb_params.get("random_state", 42)),
-            "n_jobs": int(xgb_params.get("n_jobs", model_cfg.get("n_jobs", -1))),
+            "n_jobs": int(xgb_params.get("n_jobs", 1)),  # ✅ 内层固定 1，防止并行套并行
+            "verbosity": int(xgb_params.get("verbosity", 0)),  # 减少噪声
+            "validate_parameters": bool(xgb_params.get("validate_parameters", False)),  # 减少噪声
         }
 
         # num_class: 由外部 main() 的 emotions 决定更准确，但 build_model 不拿 cfg。
@@ -151,12 +156,29 @@ def build_model(model_cfg: Dict[str, Any]):
         base_estimator = XGBClassifier(**base_params)
 
         if param_grid:
-            search = GridSearchCV(
-                estimator=base_estimator,
-                param_grid=param_grid,
-                cv=int(model_cfg.get("cv", 5)),
-                n_jobs=int(model_cfg.get("n_jobs", -1)),
-            )
+            cv = int(model_cfg.get("cv", 5))
+            outer_jobs = int(model_cfg.get("n_jobs", -1))
+            use_random = bool(model_cfg.get("random_search", True))  # 默认开启随机搜索
+            n_iter = int(model_cfg.get("n_iter", 40))
+
+            if use_random:
+                search = RandomizedSearchCV(
+                    estimator=base_estimator,
+                    param_distributions=param_grid,
+                    n_iter=n_iter,
+                    cv=cv,
+                    n_jobs=outer_jobs,
+                    random_state=int(model_cfg.get("random_state", 42)),
+                    verbose=2,  # 改为2，显示更详细的训练进度
+                )
+            else:
+                search = GridSearchCV(
+                    estimator=base_estimator,
+                    param_grid=param_grid,
+                    cv=cv,
+                    n_jobs=outer_jobs,
+                    verbose=2,  # 改为2，显示更详细的训练进度
+                )
             return SklearnSearchAdapter(search)
 
         class _XGBNoSearchAdapter:
@@ -184,7 +206,54 @@ def build_model(model_cfg: Dict[str, Any]):
 
         return _XGBNoSearchAdapter(base_estimator, base_params)
 
-    raise ConfigError(f"Unsupported model.type: {mtype} (supported: svm/mlp/rf/xgboost)")
+    if mtype == "hybrid":
+        # 构建混合模型配置
+        mlp_config = MLPConfig(
+            param_grid=model_cfg.get("mlp_config", {}).get("param_grid"),
+            cv=int(model_cfg.get("mlp_config", {}).get("cv", 5)),
+            n_jobs=int(model_cfg.get("mlp_config", {}).get("n_jobs", -1)),
+            random_state=int(model_cfg.get("random_state", 42)),
+        )
+        
+        rf_config = RFConfig(
+            param_grid=model_cfg.get("rf_config", {}).get("param_grid"),
+            cv=int(model_cfg.get("rf_config", {}).get("cv", 5)),
+            n_jobs=int(model_cfg.get("rf_config", {}).get("n_jobs", -1)),
+            random_state=int(model_cfg.get("random_state", 42)),
+        )
+        
+        # 处理SVM配置，避免重复参数和不支持的参数
+        svm_config_dict = model_cfg.get("svm_config", {}).copy()
+        # 移除SVMConfig不支持的参数
+        for key in ["cv", "n_jobs", "param_grid", "random_state"]:
+            if key in svm_config_dict:
+                del svm_config_dict[key]
+        # 确保probability为True，因为soft voting需要概率输出
+        svm_config_dict["probability"] = True
+        svm_config_dict["solver"] = svm_config_dict.get("solver", "svc")
+        
+        svm_config = SVMConfig(**svm_config_dict)
+        
+        xgb_config = XGBConfig(
+            param_grid=model_cfg.get("xgb_config", {}).get("param_grid"),
+            cv=int(model_cfg.get("xgb_config", {}).get("cv", 5)),
+            n_jobs=int(model_cfg.get("xgb_config", {}).get("n_jobs", -1)),
+            random_state=int(model_cfg.get("random_state", 42)),
+        )
+        
+        hybrid_config = HybridConfig(
+            mlp_config=mlp_config,
+            rf_config=rf_config,
+            svm_config=svm_config,
+            xgb_config=xgb_config,
+            voting_method=str(model_cfg.get("voting_method", "soft")),
+            use_stacking=bool(model_cfg.get("use_stacking", True)),
+            random_state=int(model_cfg.get("random_state", 42)),
+        )
+        
+        return HybridAdapter(hybrid_config)
+
+    raise ConfigError(f"Unsupported model.type: {mtype} (supported: svm/mlp/rf/xgboost/hybrid)")
 
 def build_preprocess(pp_cfg: Dict[str, Any]) -> TabularPreprocessor:
     cfg = TabularPreprocessConfig(
@@ -266,6 +335,7 @@ def main() -> None:
 
     # -------------------- fit -------------------- #
     logger.info("⏳ Training model...")
+    # 简化训练逻辑，移除early stopping，确保所有模型都能正常训练
     model.fit(X_train_t, y_train_t)
 
     best_params = getattr(model, "best_params_", None)

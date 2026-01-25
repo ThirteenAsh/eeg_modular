@@ -42,7 +42,7 @@ def save_confusion_matrix_seaborn(
         cmap="Blues",
         xticklabels=class_names,
         yticklabels=class_names,
-        cbar=False,
+        cbar=True,
         linewidths=0.5,
         linecolor="gray",
     )
