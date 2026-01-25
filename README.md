@@ -18,24 +18,24 @@ EEG Emotion是一个基于脑电图(EEG)数据的情感分析模块化工程，�
 
 ```
 ./
-├── eeg_emotion/      # 主包目录
-│   ├── config/       # 配置管理
-│   ├── dl/           # 深度学习实现（TensorFlow和PyTorch）
-│   ├── features/     # 特征提取
-│   ├── models/       # 模型实现
-│   │   ├── sklearn/  # sklearn模型
-│   │   ├── tf/       # TensorFlow模型
-│   │   └── torch/    # PyTorch模型
-│   ├── preprocess/   # 预处理
-│   ├── report/       # 报告生成
-│   ├── train/        # 训练相关
-│   ├── utils/        # 工具函数
-│   └── viz/          # 可视化
-├── configs/          # 配置文件目录
-├── data/             # 数据目录
-├── features/         # 特征相关文件
-├── scripts/          # 训练脚本
-└── outputs/          # 输出目录
+├── eeg_emotion/      # 主包目录
+│   ├── config/       # 配置管理
+│   ├── dl/           # 深度学习实现（TensorFlow和PyTorch）
+│   ├── features/     # 特征提取
+│   ├── models/       # 模型实现
+│   │   ├── sklearn/  # sklearn模型
+│   │   ├── tf/       # TensorFlow模型
+│   │   └── torch/    # PyTorch模型
+│   ├── preprocess/   # 预处理
+│   ├── report/       # 报告生成
+│   ├── train/        # 训练相关
+│   ├── utils/        # 工具函数
+│   └── viz/          # 可视化
+├── configs/          # 配置文件目录
+├── data/             # 数据目录
+├── features/         # 特征相关文件
+├── scripts/          # 训练脚本
+└── outputs/          # 输出目录
 ```
 
 ## 2. 配置驱动设计
