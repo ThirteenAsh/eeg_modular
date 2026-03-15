@@ -51,4 +51,4 @@ output:
 
 viz:
   seaborn_confusion_matrix: true
-  umap_boundary: false
+  umap_boundary: true  # 默认开启单个模型的UMAP生成 

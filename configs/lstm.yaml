@@ -83,4 +83,4 @@ classifier:
 
 viz:
   seaborn_confusion_matrix: true  # 使用seaborn风格的混淆矩阵
-  umap_boundary: false
+  umap_boundary: true  # 默认开启单个模型的UMAP生成 
