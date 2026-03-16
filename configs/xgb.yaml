@@ -1,9 +1,13 @@
 seed: 42
-data_dir: ./data
+data_dir: ./features  # ✅ 使用 time_data_preprocess 生成的 features 目录
 emotions: [happy, sad, normal]
 
+# ✅ 使用 NPY 数据加载器（从 time_data_preprocess）
+use_npy_data: true
+modalities: [filtered, powerspec, att, med]  # 使用所有模态
+
 split:
-  test_size: 0.30
+  test_size: 0.20  # ✅ 与 time_data_preprocess 保持一致（20%）
   val_size: 0.10
   random_state: 42
 
@@ -48,6 +52,7 @@ model:
 
 output:
   base_dir: outputs
+  run_name: XGB
 
 viz:
   seaborn_confusion_matrix: true

@@ -11,6 +11,7 @@ from sklearn.model_selection import train_test_split
 
 from eeg_emotion.config.loader import ConfigError, load_config, get, require
 from eeg_emotion.features.csv_stats import DEFAULT_CSV_FILES, build_tabular_dataset
+from eeg_emotion.features.npy_stats import load_multimodal_npy_for_sklearn, MultiModalNPYConfig
 from eeg_emotion.models.sklearn.mlp import MLPAdapter, MLPConfig
 from eeg_emotion.models.sklearn.rf import RFAdapter, RFConfig
 from eeg_emotion.models.sklearn.svm import SVMModel, from_dict, SVMConfig
@@ -287,6 +288,9 @@ def main() -> None:
         raise ConfigError("emotions must be a list of strings.")
     csv_files = list(get(cfg, "csv_files", list(DEFAULT_CSV_FILES)))
 
+    # Check if we should use NPY data (from time_data_preprocess)
+    use_npy_data = bool(get(cfg, "use_npy_data", False))
+
     split_cfg = get(cfg, "split", {})
     test_size = float(split_cfg.get("test_size", 0.30))
     val_size = float(split_cfg.get("val_size", 0.10))
@@ -294,10 +298,10 @@ def main() -> None:
 
     out_cfg = get(cfg, "output", {})
     base_dir = str(out_cfg.get("base_dir", "outputs"))
-    
-    # 不使用配置文件中的run_name，所有模型都使用时间戳作为输出目录名
-    run_name = None
-    
+
+    # 使用配置文件中的run_name
+    run_name = out_cfg.get("run_name", None)
+
     run = make_run_paths(base_dir=base_dir, run_name=run_name)
     logger = setup_logging(os.path.join(run.logs_dir, "train.log"))
     
@@ -308,30 +312,70 @@ def main() -> None:
     pp = build_preprocess(require(cfg, "preprocess", dict))
 
     # -------------------- dataset -------------------- #
-    logger.info("🔎 Building dataset from %s", data_dir)
-    X_all, y_all, skipped = build_tabular_dataset(data_dir=data_dir, emotions=emotions, csv_files=csv_files)
-    logger.info("✅ Samples: %d | Features: %d", X_all.shape[0], X_all.shape[1])
-    logger.info("📊 Label distribution: %s", dict(Counter(y_all)))
-    if skipped:
-        logger.info("⚠️ Skipped samples: %d (first 5 shown)", len(skipped))
-        for s in skipped[:5]:
-            logger.info("   - %s", s)
+    if use_npy_data:
+        # Load preprocessed NPY data from time_data_preprocess
+        logger.info("🔎 Loading NPY data from %s", data_dir)
 
-    # -------------------- split -------------------- #
-    X_temp, X_test, y_temp, y_test = train_test_split(
-        X_all, y_all, test_size=test_size, random_state=random_state, stratify=y_all
-    )
+        # Use all modalities by default
+        modalities = list(get(cfg, "modalities", ["filtered", "powerspec", "att", "med"]))
 
-    # val_size is proportion of temp
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_temp, y_temp, test_size=val_size, random_state=random_state, stratify=y_temp
-    )
-    logger.info("Split: train=%s val=%s test=%s", X_train.shape, X_val.shape, X_test.shape)
+        npy_cfg = MultiModalNPYConfig(
+            data_dir=data_dir,
+            modalities=modalities,
+        )
 
-    # -------------------- preprocess -------------------- #
-    X_train_t, y_train_t = pp.fit_transform_train(X_train, y_train)
-    X_val_t = pp.transform(X_val)
-    X_test_t = pp.transform(X_test)
+        X_train, X_test, y_train, y_test, class_names_from_npy = load_multimodal_npy_for_sklearn(npy_cfg)
+
+        logger.info("✅ NPY data loaded successfully")
+        logger.info("   Train samples: %d | Test samples: %d", X_train.shape[0], X_test.shape[0])
+        logger.info("   Feature dimension: %d", X_train.shape[1])
+        logger.info("📊 Train label distribution: %s", dict(Counter(y_train)))
+        logger.info("📊 Test label distribution: %s", dict(Counter(y_test)))
+        logger.info("📊 Class names: %s", class_names_from_npy)
+
+        # Use validation split from train set if needed
+        if val_size > 0:
+            X_train, X_val, y_train, y_val = train_test_split(
+                X_train, y_train, test_size=val_size, random_state=random_state, stratify=y_train
+            )
+            logger.info("   Validation split: train=%s val=%s", X_train.shape, X_val.shape)
+        else:
+            X_val, y_val = None, None
+            logger.info("   No validation split (val_size=0)")
+
+        # Apply preprocessing (standardization, etc.)
+        X_train_t, y_train_t = pp.fit_transform_train(X_train, y_train)
+        X_test_t = pp.transform(X_test)
+        X_val_t = pp.transform(X_val) if X_val is not None else None
+
+        # NPY data is already standardized, but we still apply preprocessing pipeline
+        # to ensure consistency (e.g., if additional preprocessing is needed)
+    else:
+        # Original CSV-based data loading
+        logger.info("🔎 Building dataset from %s", data_dir)
+        X_all, y_all, skipped = build_tabular_dataset(data_dir=data_dir, emotions=emotions, csv_files=csv_files)
+        logger.info("✅ Samples: %d | Features: %d", X_all.shape[0], X_all.shape[1])
+        logger.info("📊 Label distribution: %s", dict(Counter(y_all)))
+        if skipped:
+            logger.info("⚠️ Skipped samples: %d (first 5 shown)", len(skipped))
+            for s in skipped[:5]:
+                logger.info("   - %s", s)
+
+        # -------------------- split -------------------- #
+        X_temp, X_test, y_temp, y_test = train_test_split(
+            X_all, y_all, test_size=test_size, random_state=random_state, stratify=y_all
+        )
+
+        # val_size is proportion of temp
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_temp, y_temp, test_size=val_size, random_state=random_state, stratify=y_temp
+        )
+        logger.info("Split: train=%s val=%s test=%s", X_train.shape, X_val.shape, X_test.shape)
+
+        # -------------------- preprocess -------------------- #
+        X_train_t, y_train_t = pp.fit_transform_train(X_train, y_train)
+        X_val_t = pp.transform(X_val)
+        X_test_t = pp.transform(X_test)
 
     # -------------------- fit -------------------- #
     logger.info("⏳ Training model...")
