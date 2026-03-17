@@ -1,23 +1,22 @@
-# RandomForest experiment
+# RF 模型 - 还原到最佳版本（67.90%）
 seed: 42
-data_dir: ./features  # ✅ 使用 time_data_preprocess 生成的 features 目录
+data_dir: ./features
 emotions: [happy, sad, normal]
 
-# ✅ 使用 NPY 数据加载器（从 time_data_preprocess）
 use_npy_data: true
-modalities: [filtered, powerspec, att, med]  # 使用所有模态
+modalities: [filtered, powerspec, att, med]
 
 split:
-  test_size: 0.20  # ✅ 与 time_data_preprocess 保持一致（20%）
+  test_size: 0.20
   val_size: 0.10
   random_state: 42
 
 preprocess:
   impute_strategy: mean
   scale: true
-  select_k_best: null
+  select_k_best: 50  # ✅ 还原到 50 个特征
   pca_n_components: null
-  augment: true
+  augment: false
   noise_std: 0.01
   time_jitter: 0.02
 
@@ -27,16 +26,18 @@ model:
   n_jobs: -1
   random_state: 42
   param_grid:
-    n_estimators: [200, 500, 800]
-    max_depth: [null, 10, 20, 40]
+    # ✅ 还原到最佳参数范围
+    n_estimators: [300, 500, 800, 1000]
+    max_depth: [10, 20, 30, 40, 50]
     min_samples_split: [2, 5, 10]
     min_samples_leaf: [1, 2, 4]
-    bootstrap: [true, false]
+    max_features: [sqrt, log2]
+    bootstrap: [true]
 
 output:
   base_dir: outputs
   run_name: RF
 
 viz:
-  seaborn_confusion_matrix: true  # 使用matplotlib风格的混淆矩阵
-  umap_boundary: true  # 默认开启单个模型的UMAP生成 
+  seaborn_confusion_matrix: true
+  umap_boundary: true

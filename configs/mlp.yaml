@@ -1,43 +1,47 @@
-# MLP experiment
+# MLP 模型 - 最终优化尝试（目标 60%+）
 seed: 42
-data_dir: ./features  # ✅ 使用 time_data_preprocess 生成的 features 目录
+data_dir: ./features
 emotions: [happy, sad, normal]
 
-# ✅ 使用 NPY 数据加载器（从 time_data_preprocess）
 use_npy_data: true
-modalities: [filtered, powerspec, att, med]  # 使用所有模态
+modalities: [filtered, powerspec, att, med]
 
 split:
-  test_size: 0.20  # ✅ 与 time_data_preprocess 保持一致（20%）
+  test_size: 0.20
   val_size: 0.10
   random_state: 42
 
 preprocess:
   impute_strategy: mean
   scale: true
-  select_k_best: null
+  select_k_best: 70  # ✅ 尝试 70 个特征
   pca_n_components: null
-  augment: true
+  augment: false
   noise_std: 0.01
   time_jitter: 0.02
 
 model:
   type: mlp
-  cv: 5
+  cv: 3
   n_jobs: -1
-  max_iter: 800
   random_state: 42
   param_grid:
-    hidden_layer_sizes: [[64], [128], [128, 64]]
-    activation: [relu, tanh]
-    alpha: [0.0001, 0.001, 0.01]
-    learning_rate_init: [0.001, 0.0005]
+    # ✅ 更精细的参数网格
+    hidden_layer_sizes: [[512, 256], [1024, 512], [1024, 512, 256]]
+    activation: [tanh, relu]
     solver: [adam]
+    alpha: [0.0001, 0.0005, 0.001, 0.005]
+    learning_rate: [adaptive]
+    learning_rate_init: [0.0005, 0.001, 0.002, 0.005, 0.01]
+    max_iter: [2000]
+    early_stopping: [true]
+    validation_fraction: [0.1, 0.15]
+    n_iter_no_change: [20, 25]
 
 output:
   base_dir: outputs
   run_name: MLP
 
 viz:
-  seaborn_confusion_matrix: true  # 使用seaborn风格的混淆矩阵
-  umap_boundary: true  # 默认开启单个模型的UMAP生成 
+  seaborn_confusion_matrix: true
+  umap_boundary: true

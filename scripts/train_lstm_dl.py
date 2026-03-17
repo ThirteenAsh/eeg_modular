@@ -14,6 +14,7 @@ from eeg_emotion.features.sequence.extract import SequenceFeatureConfig, extract
 from eeg_emotion.features.sequence.augment import (
     augment_class_samples, mixup_augment, compute_sample_stats, apply_gaussian_noise_batch
 )
+from eeg_emotion.features.npy_stats import load_multimodal_npy_for_sklearn, MultiModalNPYConfig
 from eeg_emotion.preprocess.sequence import SequencePreprocessConfig, SequencePreprocessor
 from eeg_emotion.utils.logging import setup_logging
 from eeg_emotion.utils.paths import make_run_paths
@@ -300,26 +301,73 @@ def main():
 
     data_dir = str(require(cfg, "data_dir", str))
     emotions = require(cfg, "emotions", list)
-    csv_files = require(cfg, "csv_files", list)
     time_steps = int(get(cfg, "time_steps", 128))
 
-    X, y = extract_all_features(SequenceFeatureConfig(
-        data_dir=data_dir,
-        emotions=list(emotions),
-        csv_files=list(csv_files),
-        time_steps=time_steps,
-        min_cols_per_file=int(get(cfg, "min_cols_per_file", 10)),
-    ))
-    logger.info("Extracted X=%s y=%s labels=%s", X.shape, y.shape, dict(Counter(y)))
+    # ✅ 检查是否使用 NPY 数据
+    use_npy_data = bool(get(cfg, "use_npy_data", False))
+    modalities = get(cfg, "modalities", ["filtered", "powerspec", "att", "med"])
 
-    # split
-    split_cfg = get(cfg, "split", {})
-    test_size = float(split_cfg.get("test_size", 0.30))
-    seed = int(split_cfg.get("seed", 42))
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, stratify=y, random_state=seed
-    )
-    logger.info("Split train=%s test=%s", X_train.shape, X_test.shape)
+    if use_npy_data:
+        # ✅ 使用 NPY 数据加载器
+        logger.info("🔎 Loading NPY data from %s", data_dir)
+        X_train, X_test, y_train, y_test, class_names = load_multimodal_npy_for_sklearn(
+            MultiModalNPYConfig(
+                data_dir=data_dir,
+                modalities=modalities,
+            )
+        )
+        # ✅ 重塑为 3D 格式用于 LSTM: (N, T, F)
+        # 读取第一个模态的原始形状以推断维度
+        first_modality = modalities[0]
+        train_path = os.path.join(data_dir, f"X_train_{first_modality}.npy")
+        orig_shape = np.load(train_path).shape  # (N, T, F)
+        logger.info(f"📊 Original NPY shape for {first_modality}: {orig_shape}")
+        
+        orig_n, orig_t, orig_f = orig_shape
+        # 4个模态拼接后的总维度
+        total_time = orig_t * len(modalities)  # 10 * 4 = 40
+        total_features_per_step = orig_f       # 4
+        
+        # 验证维度是否匹配
+        expected_flat_dim = total_time * total_features_per_step  # 40 * 4 = 160
+        if X_train.shape[1] != expected_flat_dim:
+            logger.warning(f"⚠️  Dimension mismatch: expected {expected_flat_dim}, got {X_train.shape[1]}")
+            logger.warning(f"   Using actual flat_dim: {X_train.shape[1]}")
+            # 使用实际维度重新计算
+            total_features_per_step = X_train.shape[1] // total_time
+        
+        # 重塑为 3D
+        num_samples = X_train.shape[0]
+        X_train = X_train.reshape(num_samples, total_time, total_features_per_step)
+        X_test = X_test.reshape(X_test.shape[0], total_time, total_features_per_step)
+        
+        # 更新 time_steps 变量以匹配实际数据
+        time_steps = total_time
+        logger.info("✅ Reshaped to 3D: train=%s test=%s (T=%d, F=%d)", 
+                   X_train.shape, X_test.shape, total_time, total_features_per_step)
+        logger.info("✅ NPY data loaded: train=%s test=%s", X_train.shape, X_test.shape)
+        logger.info("📊 Train label distribution: %s", dict(Counter(y_train)))
+        logger.info("📊 Test label distribution: %s", dict(Counter(y_test)))
+    else:
+        # ✅ 使用原始 CSV 文件加载
+        csv_files = require(cfg, "csv_files", list)
+        X, y = extract_all_features(SequenceFeatureConfig(
+            data_dir=data_dir,
+            emotions=list(emotions),
+            csv_files=list(csv_files),
+            time_steps=time_steps,
+            min_cols_per_file=int(get(cfg, "min_cols_per_file", 10)),
+        ))
+        logger.info("Extracted X=%s y=%s labels=%s", X.shape, y.shape, dict(Counter(y)))
+
+        # split
+        split_cfg = get(cfg, "split", {})
+        test_size = float(split_cfg.get("test_size", 0.30))
+        seed = int(split_cfg.get("seed", 42))
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, stratify=y, random_state=seed
+        )
+        logger.info("Split train=%s test=%s", X_train.shape, X_test.shape)
 
     # augment (train only)
     aug_cfg = get(cfg, "augment", {})
