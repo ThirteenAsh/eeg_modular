@@ -8,6 +8,7 @@ import numpy as np
 
 from eeg_emotion.config.loader import ConfigError, load_config, get, require
 from eeg_emotion.features.csv_stats import DEFAULT_CSV_FILES, build_tabular_dataset
+from eeg_emotion.features.npy_stats import MultiModalNPYConfig, load_multimodal_npy_for_sklearn
 from eeg_emotion.models.sklearn.mlp import MLPAdapter, MLPConfig
 from eeg_emotion.models.sklearn.rf import RFAdapter, RFConfig
 from eeg_emotion.models.sklearn.svm import SVMModel, from_dict, SVMConfig
@@ -201,32 +202,62 @@ def main() -> None:
     first_cfg = load_config(args.configs[0])
     data_dir = str(require(first_cfg, "data_dir", str))
     emotions = require(first_cfg, "emotions", list)
-    csv_files = list(get(first_cfg, "csv_files", list(DEFAULT_CSV_FILES)))
     
-    # 构建数据集
-    logger.info("🔎 Building dataset from %s", data_dir)
-    X_all, y_all, skipped = build_tabular_dataset(
-        data_dir=data_dir, 
-        emotions=emotions, 
-        csv_files=csv_files
-    )
-    logger.info("✅ Samples: %d | Features: %d", X_all.shape[0], X_all.shape[1])
+    # 检查是否使用NPY数据
+    use_npy_data = bool(get(first_cfg, "use_npy_data", False))
     
-    # 构建预处理管道
-    pp = build_preprocess(require(first_cfg, "preprocess", dict))
-    
-    # 划分数据集
-    from sklearn.model_selection import train_test_split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_all, y_all, 
-        test_size=float(get(first_cfg, "split.test_size", 0.30)),
-        random_state=int(get(first_cfg, "split.random_state", 42)),
-        stratify=y_all
-    )
-    
-    # 预处理数据
-    X_train_t, y_train_t = pp.fit_transform_train(X_train, y_train)
-    X_test_t = pp.transform(X_test)
+    if use_npy_data:
+        # 使用NPY数据
+        modalities = require(first_cfg, "modalities", list)
+        logger.info("🔎 Loading NPY data from %s", data_dir)
+        
+        npy_cfg = MultiModalNPYConfig(
+            data_dir=data_dir,
+            modalities=modalities
+        )
+        X_train, X_test, y_train, y_test, class_names = load_multimodal_npy_for_sklearn(npy_cfg)
+        
+        # 合并训练集和测试集用于UMAP可视化
+        X_all = np.concatenate([X_train, X_test], axis=0)
+        y_all = np.concatenate([y_train, y_test], axis=0)
+        
+        logger.info("✅ Samples: %d (train: %d, test: %d) | Features: %d", 
+                    X_all.shape[0], X_train.shape[0], X_test.shape[0], X_all.shape[1])
+        
+        # 构建预处理管道
+        pp = build_preprocess(require(first_cfg, "preprocess", dict))
+        
+        # 预处理数据
+        X_train_t, y_train_t = pp.fit_transform_train(X_train, y_train)
+        X_test_t = pp.transform(X_test)
+    else:
+        # 使用CSV数据
+        csv_files = list(get(first_cfg, "csv_files", list(DEFAULT_CSV_FILES)))
+        
+        # 构建数据集
+        logger.info("🔎 Building dataset from %s", data_dir)
+        X_all, y_all, skipped = build_tabular_dataset(
+            data_dir=data_dir, 
+            emotions=emotions, 
+            csv_files=csv_files
+        )
+        logger.info("✅ Samples: %d | Features: %d", X_all.shape[0], X_all.shape[1])
+        
+        # 构建预处理管道
+        pp = build_preprocess(require(first_cfg, "preprocess", dict))
+        
+        # 划分数据集
+        from sklearn.model_selection import train_test_split
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_all, y_all, 
+            test_size=float(get(first_cfg, "split.test_size", 0.30)),
+            random_state=int(get(first_cfg, "split.random_state", 42)),
+            stratify=y_all
+        )
+        
+        # 预处理数据
+        X_train_t, y_train_t = pp.fit_transform_train(X_train, y_train)
+        X_test_t = pp.transform(X_test)
     
     # 准备模型字典
     models = {}
