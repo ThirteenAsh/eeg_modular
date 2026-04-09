@@ -20,11 +20,10 @@ EEG Emotion是一个基于脑电图(EEG)数据的情感分析模块化工程，�
 ./
 ├── eeg_emotion/      # 主包目录
 │   ├── config/       # 配置管理
-│   ├── dl/           # 深度学习实现（TensorFlow和PyTorch）
+│   ├── dl/           # 深度学习训练实现（PyTorch）
 │   ├── features/     # 特征提取
 │   ├── models/       # 模型实现
 │   │   ├── sklearn/  # sklearn模型
-│   │   ├── tf/       # TensorFlow模型
 │   │   └── torch/    # PyTorch模型
 │   ├── preprocess/   # 预处理
 │   ├── report/       # 报告生成
@@ -134,8 +133,10 @@ cfg = load_config("configs/svm.yaml")
 
 # 获取配置项
 emotions = require(cfg, "emotions", list)
-model_type = require(cfg, "model.type", str)
-seaborn_cm = get(cfg, "viz.seaborn_confusion_matrix", False)
+model_cfg = require(cfg, "model", dict)
+model_type = require(model_cfg, "type", str)
+viz_cfg = get(cfg, "viz", {})
+seaborn_cm = bool(viz_cfg.get("seaborn_confusion_matrix", False))
 ```
 
 ## 3. 可视化功能
@@ -192,7 +193,7 @@ viz:
 **使用方法**：
 
 ```bash
-python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml configs/xgb.yaml configs/lstm.yaml -o outputs/multi_model_umap_all
+python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml configs/xgb.yaml configs/hybrid.yaml -o outputs/multi_model_umap
 ```
 
 **输出结果**：
@@ -302,238 +303,91 @@ python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/
 - GridSearchCV 自己会并行（n_jobs）
 - 为避免“外层并行 + XGBoost 内层并行”线程嵌套，本补丁在启用 param_grid 时将 XGBoost 的 n_jobs 强制设为 1。
 
-## 5. 可视化选择
+## 5. 可视化与输出
 
-### 5.1 如何选择可视化风格
+### 5.1 可视化开关
 
-#### 1. 配置文件设置
-
-在YAML配置文件中添加可视化风格选择参数：
+在配置文件中通过 `viz` 控制图表输出：
 
 ```yaml
-# configs/svm.yaml
 viz:
-  seaborn_confusion_matrix: true  # true: seaborn风格, false: matplotlib风格
-  umap_boundary: true              # 是否生成UMAP边界图
-  training_curves: true            # 是否生成训练曲线
+  seaborn_confusion_matrix: true
+  umap_boundary: true
 ```
 
-#### 2. 训练脚本支持
+当前三个主训练脚本都支持上述开关：
+- `scripts/train.py`
+- `scripts/train_lstm_dl.py`
+- `scripts/train_cnn_dl.py`
 
-所有训练脚本都支持根据配置文件选择可视化风格：
+### 5.2 标准输出目录
 
-- `scripts/train.py`：支持sklearn模型（SVM、MLP、RF等）
-- `scripts/train_lstm_dl.py`：支持LSTM模型
-- `scripts/train_cnn_dl.py`：支持CNN模型
-- `scripts/train_svm_modular.py`：支持SVM模型
+每次训练会在 `outputs/` 下创建运行目录，典型结构如下：
 
-### 5.2 训练曲线实现
-
-训练曲线绘制目前在LSTM/tensorflow路线中实现，其他路线可参考扩展。
-
-**核心实现**：
-
-```python
-def plot_training_curves(history, save_path):
-    """绘制训练曲线"""
-    # 绘制准确率曲线
-    plt.figure(figsize=(12, 4))
-    plt.subplot(1, 2, 1)
-    plt.plot(history.history['accuracy'])
-    plt.plot(history.history['val_accuracy'])
-    plt.title('Model Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.legend(['Train', 'Validation'], loc='upper left')
-    
-    # 绘制损失曲线
-    plt.subplot(1, 2, 2)
-    plt.plot(history.history['loss'])
-    plt.plot(history.history['val_loss'])
-    plt.title('Model Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend(['Train', 'Validation'], loc='upper left')
-    
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
+```text
+outputs/<run>/
+├── artifacts/
+├── figures/
+├── logs/
+├── models/
+└── metrics.json
 ```
 
-## 6. UMAP边界图生成
+## 6. 模块说明
 
-### 6.1 UMAP边界图问题分析
+### 6.1 `eeg_emotion/config`
 
-#### 1. 为什么UMAP没有生成？
+- 配置加载与校验（YAML/JSON）
+- 核心文件：`loader.py`
 
-- UMAP绘制函数已实现：`save_umap_svm_decision_boundary`
-- 但训练脚本没有调用它
-- 缺少配置选项处理
-- 缺少依赖检查
+### 6.2 `eeg_emotion/features`
 
-#### 2. 解决方案
+- CSV 统计特征提取
+- NPY 多模态特征加载
+- 序列特征提取与增强
 
-修改训练脚本以启用UMAP边界绘制：
+### 6.3 `eeg_emotion/models`
 
-```python
-# 从配置文件读取UMAP设置
-generate_umap = get(cfg, "viz.umap_boundary", False)
+- `sklearn/`：SVM、MLP、RF、XGBoost、Hybrid
+- `torch/`：LSTM/CVAE/CNN 相关模型
 
-# 绘制UMAP边界图（如果配置启用）
-if generate_umap:
-    try:
-        save_umap_svm_decision_boundary(
-            X=X_test_t,
-            y=y_test,
-            class_names=emotions,
-            save_path=os.path.join(run.figures_dir, "umap_boundary.png"),
-            title="UMAP Projection with Decision Boundary (Test Set)",
-        )
-        logger.info("✅ UMAP boundary plot saved")
-    except ImportError:
-        logger.warning("⚠️ umap-learn not installed, skipping UMAP boundary plot")
-    except Exception as e:
-        logger.error(f"❌ Failed to generate UMAP boundary: {e}")
-```
+### 6.4 `eeg_emotion/preprocess`
 
-### 6.2 多模型UMAP边界图
+- 表格预处理（缺失值、标准化、特征选择、PCA）
+- 序列预处理
 
-**功能说明**：在单个UMAP投影上绘制多个模型的决策边界，便于直观比较不同模型的决策边界差异。
+### 6.5 `eeg_emotion/dl/torch`
 
-**使用方法**：
+- PyTorch 数据、损失函数、训练器（含 K-fold）
 
-```bash
-python scripts/multi_model_umap.py -c configs/svm.yaml configs/mlp.yaml configs/rf.yaml -o outputs/multi_model_umap
-```
+### 6.6 `eeg_emotion/viz`
 
-**实现原理**：
-1. 生成单个UMAP投影（仅一次）
-2. 对每个模型，使用其预测结果在UMAP空间中训练代理SVM
-3. 在同一UMAP投影上绘制所有代理SVM的决策边界
-4. 使用不同颜色和线型区分不同模型的边界
+- 混淆矩阵、训练曲线、UMAP 边界图
 
-## 7. 模块详细说明
+## 7. 最佳实践
 
-### 7.1 配置模块（config）
+1. 使用配置驱动实验，不在脚本里写死参数。
+2. 训练集与测试集严格隔离，预处理仅在训练集拟合。
+3. 固定随机种子并记录到运行日志/指标文件。
+4. 所有实验统一输出到 `outputs/`，避免手工散落文件。
+5. 变更训练流程后，先运行一致性校验再做横向对比。
 
-**核心功能**：
-- 加载和解析YAML配置文件
-- 提供配置验证和默认值
-- 支持嵌套配置访问
+## 8. 常见问题
 
-**主要文件**：
-- `config/loader.py`：配置加载和解析
+### 8.1 UMAP 图未生成
 
-### 7.2 数据模块（data）
+- 检查 `viz.umap_boundary` 是否为 `true`
+- 检查 `umap-learn` 是否安装
 
-**核心功能**：
-- 数据加载和预处理
-- 支持多种数据格式
-- 提供数据增强功能
+### 8.2 结果波动较大
 
-**主要文件**：
-- `data/loader.py`：数据加载
-- `data/augment.py`：数据增强
+- 检查 seed 设置是否一致
+- 检查是否开启了随机增强
 
-### 7.3 模型模块（models）
+### 8.3 CPU 环境训练失败（XGBoost）
 
-**核心功能**：
-- 支持多种模型类型
-- 统一的模型接口
-- 支持模型保存和加载
+- 将配置中的 XGBoost `device` 调整为 `cpu`
 
-**主要文件**：
-- `models/sklearn/`：sklearn模型实现
-- `models/tensorflow/`：tensorflow模型实现
+## 9. 总结
 
-### 7.4 可视化模块（viz）
-
-**核心功能**：
-- 混淆矩阵生成
-- 训练曲线绘制
-- UMAP边界图生成
-- 多模型可视化比较
-
-**主要文件**：
-- `viz/confusion_matrix.py`：混淆矩阵
-- `viz/training_curves.py`：训练曲线
-- `viz/umap_boundary.py`：UMAP边界图
-
-## 8. 最佳实践
-
-### 8.1 配置文件设计
-
-- 每个实验使用独立的配置文件
-- 使用清晰的命名规则（如`svm_baseline.yaml`）
-- 避免使用绝对路径
-- 保持配置简洁和可读性
-
-### 8.2 实验命名
-典型配置字段：
-- output.base_dir / output.run_name
-- data_dir / emotions / csv_files
-- preprocess.xxx
-- model.xxx
-- train.xxx
-- viz.xxx（可选）
-
-- 使用有意义的实验名称，包含关键参数
-- 示例：`svm_rbf_c1.0_gamma_scale`
-
-### 8.3 结果分析
-
-- 关注多个指标（准确率、精确率、召回率、F1值）
-- 分析混淆矩阵，了解模型在不同类别上的表现
-- 比较不同模型和参数的表现
-
-## 9. 常见问题与解决方案
-
-### 9.1 数据泄露问题
-
-**问题**：预处理过程中使用了测试集数据，导致模型泛化能力下降。
-
-**解决方案**：
-- 严格遵循预处理流程，只在训练集上拟合预处理模型
-- 使用`fit_transform_train`方法处理训练集
-- 使用`transform`方法处理验证集和测试集
-
-### 9.2 模型过拟合问题
-
-**问题**：模型在训练集上表现良好，但在测试集上表现较差。
-
-**解决方案**：
-- 增加数据量或使用数据增强
-- 降低模型复杂度
-- 使用正则化技术
-- 增加验证集比例
-- 早期停止
-
-### 9.3 实验结果不一致
-
-**问题**：相同配置文件，多次运行结果不一致。
-
-**解决方案**：
-- 确保随机种子设置正确
-- 检查是否使用了随机数据增强
-- 确保数据加载顺序一致
-
-## 10. 总结
-
-EEG Emotion模块化工程是一个设计精良、易于扩展的情感分析框架，采用配置驱动的设计理念，支持多种模型和训练方式。
-
-**核心优势**：
-- 统一的数据预处理接口
-- 统一的模型接口
-- 统一的训练入口
-- 统一的输出目录与指标格式
-- 统一的可视化产物
-- 可扩展的设计
-
-通过使用该工程，研究人员可以快速构建和比较不同的EEG情感分析模型，加速研究进程，提高实验结果的可靠性和可重复性。
-- 在仓库根目录提供：
-  - `ENGINEERINREAD_GUIDE.md`（本文）
-- 约定所有实验 run 都输出到 `outputs/`（但不要把 outputs 提交到 git；用 .gitignore）
-- 每次新增模型/功能：
-  - 新增模块文件
-  - 新增 yaml 示例
-  - README/指南里补一段“如何运行”
+当前工程以配置驱动为核心，覆盖 sklearn 与 PyTorch 两条训练路线，具备统一预处理、统一评估与统一输出结构。建议优先维护配置一致性与实验可复现性，以保证模型对比结论可靠。
