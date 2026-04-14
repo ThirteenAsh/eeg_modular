@@ -1,0 +1,293 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import os
+import sys
+import time
+import traceback
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import yaml
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.model import EmotionInferenceModel, InferenceConfig
+from src.voting import SlidingWindowVoter, VotingConfig, ProbabilityAggregator
+from src.unity_comm import UnityEmotionSender, UnityConfig
+from src.thinkgear import ThinkGearCollector, ThinkGearConfig
+
+
+@dataclass
+class SystemConfig:
+    model: InferenceConfig
+    voting: VotingConfig
+    unity: UnityConfig
+    thinkgear: ThinkGearConfig
+    inference: Dict[str, Any]
+    logging: Dict[str, Any]
+
+
+def setup_logging(cfg: Dict[str, Any]):
+    log_level = getattr(logging, cfg.get("level", "INFO"))
+    log_file = cfg.get("log_file", "realtime_inference.log")
+    console_output = cfg.get("console_output", True)
+    
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    
+    handlers = []
+    if console_output:
+        handlers.append(logging.StreamHandler())
+    handlers.append(logging.FileHandler(log_file))
+    
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=handlers,
+    )
+
+
+def load_config(config_path: str) -> SystemConfig:
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    
+    model_cfg = cfg["model"]
+    voting_cfg = cfg["voting"]
+    unity_cfg = cfg["unity"]
+    thinkgear_cfg = cfg["thinkgear"]
+    inference_cfg = cfg["inference"]
+    logging_cfg = cfg["logging"]
+    
+    return SystemConfig(
+        model=InferenceConfig(
+            model_path=Path(model_cfg["path"]),
+            model_type=model_cfg.get("type", "multimodal_cnn"),
+            device=model_cfg.get("device", "auto"),
+            num_classes=model_cfg.get("num_classes", 3),
+            modalities=tuple(model_cfg.get("modalities", ["filtered", "powerspec", "att", "med"])),
+            time_steps=model_cfg.get("time_steps", 10),
+            feat_dim=model_cfg.get("feat_dim", 4),
+            use_cvae=model_cfg.get("use_cvae", True),
+            cvae_latent_dim=model_cfg.get("cvae_latent_dim", 64),
+            cvae_input_dim=model_cfg.get("cvae_input_dim", 160),
+            dropout=model_cfg.get("dropout", 0.5),
+            scalers_dir=Path(model_cfg["scalers_dir"]) if "scalers_dir" in model_cfg else None,
+        ),
+        voting=VotingConfig(
+            window_size=voting_cfg.get("window_size", 10),
+            vote_threshold=voting_cfg.get("vote_threshold", 0.6),
+            transition_duration=voting_cfg.get("transition_duration", 1.0),
+            min_stability_frames=voting_cfg.get("min_stability_frames", 3),
+        ),
+        unity=UnityConfig(
+            host=unity_cfg.get("host", "localhost"),
+            port=unity_cfg.get("port", 8765),
+            max_connections=unity_cfg.get("max_connections", 5),
+            ping_interval=unity_cfg.get("ping_interval", 30.0),
+            ping_timeout=unity_cfg.get("ping_timeout", 10.0),
+        ),
+        thinkgear=ThinkGearConfig(
+            connection_mode=thinkgear_cfg.get("connection_mode", "tcp"),
+            com_port=thinkgear_cfg.get("com_port", "COM3"),
+            baud_rate=thinkgear_cfg.get("baud_rate", 57600),
+            tcp_host=thinkgear_cfg.get("tcp_host", "127.0.0.1"),
+            tcp_port=thinkgear_cfg.get("tcp_port", 13854),
+            sample_rate=thinkgear_cfg.get("sample_rate", 512),
+            buffer_size=thinkgear_cfg.get("buffer_size", 1024),
+            use_mock=thinkgear_cfg.get("use_mock", False),
+        ),
+        inference=inference_cfg,
+        logging=logging_cfg,
+    )
+
+
+class EmotionInferenceSystem:
+    def __init__(self, cfg: SystemConfig):
+        self.cfg = cfg
+        self.logger = logging.getLogger("EmotionInferenceSystem")
+        
+        self.model: Optional[EmotionInferenceModel] = None
+        self.voter: Optional[SlidingWindowVoter] = None
+        self.prob_agg: Optional[ProbabilityAggregator] = None
+        self.unity_sender: Optional[UnityEmotionSender] = None
+        self.collector: Optional[ThinkGearCollector] = None
+        
+        self._running = False
+        self._start_time: float = 0.0
+        self._inference_count = 0
+        self._total_inference_time = 0.0
+
+    def initialize(self):
+        self.logger.info("Initializing EmotionInferenceSystem...")
+        
+        self.model = EmotionInferenceModel(self.cfg.model)
+        self.voter = SlidingWindowVoter(self.cfg.voting)
+        self.prob_agg = ProbabilityAggregator(window_size=self.cfg.voting.window_size)
+        self.unity_sender = UnityEmotionSender(self.cfg.unity)
+        self.collector = ThinkGearCollector(self.cfg.thinkgear)
+        
+        self.logger.info("System initialized successfully")
+
+    def start(self):
+        if self._running:
+            self.logger.warning("System already running")
+            return
+        
+        self._running = True
+        self._start_time = time.time()
+        self._inference_count = 0
+        self._total_inference_time = 0.0
+        
+        self.logger.info("Starting system...")
+        
+        self.collector.start()
+        self.unity_sender.start()
+        
+        time.sleep(0.5)
+        
+        self.logger.info("System started. Press Ctrl+C to stop.")
+        self._main_loop()
+
+    def stop(self):
+        self.logger.info("Stopping system...")
+        self._running = False
+        
+        if self.collector:
+            self.collector.stop()
+        if self.unity_sender:
+            self.unity_sender.stop()
+        
+        self._log_performance_stats()
+        self.logger.info("System stopped")
+
+    def _main_loop(self):
+        inference_interval = self.cfg.inference.get("inference_interval", 0.1)
+        
+        try:
+            while self._running:
+                loop_start = time.time()
+                
+                self._do_inference()
+                
+                elapsed = time.time() - loop_start
+                if elapsed < inference_interval:
+                    time.sleep(inference_interval - elapsed)
+                    
+        except KeyboardInterrupt:
+            self.logger.info("Received keyboard interrupt")
+        except Exception as e:
+            self.logger.error(f"Unexpected error in main loop: {e}")
+            self.logger.error(traceback.format_exc())
+        finally:
+            self.stop()
+
+    def _do_inference(self):
+        try:
+            inference_start = time.time()
+            
+            multimodal_data = self.collector.get_multimodal_features(
+                time_steps=self.cfg.model.time_steps,
+                feat_dim=self.cfg.model.feat_dim,
+            )
+            
+            emotion, probs = self.model.predict(multimodal_data)
+            
+            smoothed_probs = self.prob_agg.update(probs)
+            current_time = time.time()
+            final_emotion, transition_progress = self.voter.update(
+                emotion=emotion,
+                probabilities=smoothed_probs,
+                current_time=current_time,
+            )
+            
+            confidence = float(smoothed_probs.max())
+            prob_dict = {
+                "happy": float(smoothed_probs[0]),
+                "sad": float(smoothed_probs[1]),
+                "normal": float(smoothed_probs[2]),
+            }
+            
+            self.unity_sender.send(
+                emotion=final_emotion,
+                confidence=confidence,
+                transition_progress=transition_progress,
+                probabilities=prob_dict,
+                timestamp=current_time,
+            )
+            
+            inference_time = (time.time() - inference_start) * 1000
+            self._inference_count += 1
+            self._total_inference_time += inference_time
+            
+            if self._inference_count % 100 == 0:
+                self._log_performance_stats()
+            
+            self.logger.debug(
+                f"Inference: {final_emotion} (conf={confidence:.2f}, "
+                f"transition={transition_progress:.2f}, "
+                f"latency={inference_time:.1f}ms)"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Inference error: {e}")
+            self.logger.debug(traceback.format_exc())
+
+    def _log_performance_stats(self):
+        if self._inference_count == 0:
+            return
+        
+        avg_latency = self._total_inference_time / self._inference_count
+        uptime = time.time() - self._start_time
+        
+        stats = {
+            "uptime_seconds": uptime,
+            "inference_count": self._inference_count,
+            "avg_latency_ms": avg_latency,
+            "unity_connected": self.unity_sender.is_connected() if self.unity_sender else False,
+            "window_stats": self.voter.get_window_stats() if self.voter else {},
+        }
+        
+        self.logger.info(f"Performance stats: {stats}")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="EEG Emotion Real-time Inference System")
+    parser.add_argument(
+        "-c", "--config",
+        type=str,
+        default="config/config.yaml",
+        help="Path to configuration file"
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    
+    try:
+        cfg = load_config(args.config)
+        setup_logging(cfg.logging)
+        
+        logger = logging.getLogger("main")
+        logger.info("=" * 60)
+        logger.info("EEG Emotion Real-time Inference System")
+        logger.info("=" * 60)
+        
+        system = EmotionInferenceSystem(cfg)
+        system.initialize()
+        system.start()
+        
+    except FileNotFoundError as e:
+        print(f"Error: Configuration file not found: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}")
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
