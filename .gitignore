@@ -49,3 +49,6 @@ temp/
 tmp/
 *.tmp
 *.temp
+
+# ThinkGear Connector (NeuroSky device software)
+ThinkGear Connector/
