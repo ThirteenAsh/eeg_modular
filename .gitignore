@@ -44,8 +44,27 @@ config.json
 *.pkl
 *.pickle
 
+# Features files (training data)
+/features/
+*.npy
+
+# Realtime inference model and features files
+realtime_inference/features/
+realtime_inference/models/
+
 # Temporary files
 temp/
 tmp/
 *.tmp
 *.temp
+
+# ThinkGear Connector (NeuroSky device software)
+ThinkGear Connector/
+
+# Analysis reports
+PROJECT_ANALYSIS_REPORT.md
+*ANALYSIS*.md
+
+# Realtime inference logs
+realtime_inference/logs/
+realtime_inference/*.log

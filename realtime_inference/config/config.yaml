@@ -1,0 +1,46 @@
+model:
+  path: "models/best_fold4.pt"    # 你的模型文件路径
+  type: "multimodal_cnn"             # 模型类型: multimodal_cnn, lstm, svm, mlp, rf, xgb, hybrid
+  device: "auto"                      # 推理设备: auto, cpu, cuda
+  num_classes: 3
+  modalities: ["filtered", "powerspec", "att", "med"]
+  time_steps: 10
+  feat_dim: 4
+  use_cvae: true
+  cvae_latent_dim: 64
+  cvae_input_dim: 160
+  dropout: 0.5
+  scalers_dir: "features"
+
+voting:
+  window_size: 10
+  vote_threshold: 0.6
+  transition_duration: 1.0
+  min_stability_frames: 3
+
+unity:
+  host: "localhost"
+  port: 8765
+  max_connections: 5
+  ping_interval: 30.0
+  ping_timeout: 10.0
+
+thinkgear:
+  connection_mode: "tcp"
+  com_port: "COM6"
+  baud_rate: 57600
+  tcp_host: "127.0.0.1"
+  tcp_port: 13854
+  sample_rate: 512
+  buffer_size: 1024
+  use_mock: false
+
+inference:
+  inference_interval: 0.1
+  max_inference_latency_ms: 200
+  target_cpu_usage_percent: 30
+
+logging:
+  level: "INFO"
+  log_file: "logs/realtime_inference.log"
+  console_output: true
