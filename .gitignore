@@ -52,3 +52,7 @@ tmp/
 
 # ThinkGear Connector (NeuroSky device software)
 ThinkGear Connector/
+
+# Analysis reports
+PROJECT_ANALYSIS_REPORT.md
+*ANALYSIS*.md
