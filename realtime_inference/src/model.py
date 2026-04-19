@@ -35,6 +35,7 @@ class InferenceConfig:
     cvae_checkpoint: Optional[str] = None
     dropout: float = 0.5
     scalers_dir: Optional[Path] = None
+    skip_scaling: bool = False  # 跳过归一化（用于已经归一化的训练数据）
 
 
 class EmotionInferenceModel:
@@ -76,8 +77,17 @@ class EmotionInferenceModel:
         """应用归一化器 - 按照原始项目的方式"""
         result = {}
         
+        # 如果配置了跳过归一化，直接返回原始数据
+        if self.cfg.skip_scaling:
+            logger.info("[SCALER] Skipping scaling (using pre-normalized training data)")
+            for mod in self.cfg.modalities:
+                result[mod] = data.get(mod, np.zeros((self.cfg.time_steps, self.cfg.feat_dim), dtype=np.float32))
+            return result
+        
         for mod in self.cfg.modalities:
             arr = data.get(mod, np.zeros((self.cfg.time_steps, self.cfg.feat_dim), dtype=np.float32))
+            
+            logger.debug(f"[SCALER] {mod} - Before scaling: mean={arr.mean():.4f}, std={arr.std():.4f}")
             
             if mod in self.scalers:
                 scaler = self.scalers[mod]
@@ -86,8 +96,10 @@ class EmotionInferenceModel:
                 arr_reshaped = arr.reshape(-1, original_shape[1])  # (10, 4)
                 arr_scaled = scaler.transform(arr_reshaped)
                 result[mod] = arr_scaled.reshape(original_shape)
+                logger.debug(f"[SCALER] {mod} - After scaling: mean={result[mod].mean():.4f}, std={result[mod].std():.4f}")
             else:
                 result[mod] = arr
+                logger.warning(f"[SCALER] {mod} - No scaler found, using raw data")
         
         return result
 
@@ -152,26 +164,36 @@ class EmotionInferenceModel:
         Returns:
             (emotion_label, probabilities)
         """
+        logger.debug("[MODEL] Starting inference...")
+        
         data = self._apply_scalers(data)
         
         x_dict = {}
         for mod in self.cfg.modalities:
             if mod not in data:
                 data[mod] = np.zeros((self.cfg.time_steps, self.cfg.feat_dim), dtype=np.float32)
+                logger.warning(f"[MODEL] Missing modality {mod}, using zero padding")
             
             arr = data[mod]
             if arr.shape[0] < self.cfg.time_steps:
                 pad = np.zeros((self.cfg.time_steps - arr.shape[0], arr.shape[1]), dtype=np.float32)
                 arr = np.vstack([arr, pad])
+                logger.debug(f"[MODEL] Padded modality {mod} from {arr.shape[0]-pad.shape[0]} to {self.cfg.time_steps} steps")
             elif arr.shape[0] > self.cfg.time_steps:
                 arr = arr[:self.cfg.time_steps]
+                logger.debug(f"[MODEL] Truncated modality {mod} from {arr.shape[0]+self.cfg.time_steps} to {self.cfg.time_steps} steps")
             
             x_dict[mod] = torch.from_numpy(arr).unsqueeze(0).to(self.device, dtype=torch.float32)
         
         outputs = self.model(x_dict)
+        logger.debug(f"[MODEL] Raw model outputs: {outputs.cpu().numpy()[0]}")
+        
         probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
         pred_idx = int(np.argmax(probs))
         emotion = self.class_names[pred_idx]
+        
+        logger.debug(f"[MODEL] Probabilities - happy={probs[0]:.4f}, sad={probs[1]:.4f}, normal={probs[2]:.4f}")
+        logger.info(f"[MODEL] Predicted emotion: {emotion} (confidence={probs[pred_idx]:.4f})")
         
         return emotion, probs
 

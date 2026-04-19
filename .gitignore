@@ -68,3 +68,7 @@ PROJECT_ANALYSIS_REPORT.md
 # Realtime inference logs
 realtime_inference/logs/
 realtime_inference/*.log
+
+# Temporary documents
+8~9.md
+aa.txt

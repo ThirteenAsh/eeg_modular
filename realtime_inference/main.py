@@ -6,7 +6,9 @@ import logging
 import os
 import sys
 import time
+import datetime
 import traceback
+import numpy as np
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -62,20 +64,21 @@ def load_config(config_path: str) -> SystemConfig:
     logging_cfg = cfg["logging"]
     
     return SystemConfig(
-        model=InferenceConfig(
-            model_path=Path(model_cfg["path"]),
-            model_type=model_cfg.get("type", "multimodal_cnn"),
-            device=model_cfg.get("device", "auto"),
-            num_classes=model_cfg.get("num_classes", 3),
-            modalities=tuple(model_cfg.get("modalities", ["filtered", "powerspec", "att", "med"])),
-            time_steps=model_cfg.get("time_steps", 10),
-            feat_dim=model_cfg.get("feat_dim", 4),
-            use_cvae=model_cfg.get("use_cvae", True),
-            cvae_latent_dim=model_cfg.get("cvae_latent_dim", 64),
-            cvae_input_dim=model_cfg.get("cvae_input_dim", 160),
-            dropout=model_cfg.get("dropout", 0.5),
-            scalers_dir=Path(model_cfg["scalers_dir"]) if "scalers_dir" in model_cfg else None,
-        ),
+            model=InferenceConfig(
+                model_path=Path(model_cfg["path"]),
+                model_type=model_cfg.get("type", "multimodal_cnn"),
+                device=model_cfg.get("device", "auto"),
+                num_classes=model_cfg.get("num_classes", 3),
+                modalities=tuple(model_cfg.get("modalities", ["filtered", "powerspec", "att", "med"])),
+                time_steps=model_cfg.get("time_steps", 10),
+                feat_dim=model_cfg.get("feat_dim", 4),
+                use_cvae=model_cfg.get("use_cvae", True),
+                cvae_latent_dim=model_cfg.get("cvae_latent_dim", 64),
+                cvae_input_dim=model_cfg.get("cvae_input_dim", 160),
+                dropout=model_cfg.get("dropout", 0.5),
+                scalers_dir=Path(model_cfg["scalers_dir"]) if "scalers_dir" in model_cfg else None,
+                skip_scaling=model_cfg.get("skip_scaling", False),
+            ),
         voting=VotingConfig(
             window_size=voting_cfg.get("window_size", 10),
             vote_threshold=voting_cfg.get("vote_threshold", 0.6),
@@ -98,6 +101,8 @@ def load_config(config_path: str) -> SystemConfig:
             sample_rate=thinkgear_cfg.get("sample_rate", 512),
             buffer_size=thinkgear_cfg.get("buffer_size", 1024),
             use_mock=thinkgear_cfg.get("use_mock", False),
+            use_training_data=thinkgear_cfg.get("use_training_data", True),
+            features_dir=thinkgear_cfg.get("features_dir", "../features"),
         ),
         inference=inference_cfg,
         logging=logging_cfg,
@@ -119,9 +124,23 @@ class EmotionInferenceSystem:
         self._start_time: float = 0.0
         self._inference_count = 0
         self._total_inference_time = 0.0
+        
+        # log.txt 文件处理
+        self.log_file_path = Path("log.txt")
+        self.log_file = None
 
     def initialize(self):
         self.logger.info("Initializing EmotionInferenceSystem...")
+        
+        # 打开 log.txt 文件
+        try:
+            self.log_file = open(self.log_file_path, "a", encoding="utf-8")
+            self._write_to_log("=" * 80 + "\n")
+            self._write_to_log(f"System started at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            self._write_to_log("=" * 80 + "\n")
+        except Exception as e:
+            self.logger.error(f"Failed to open log.txt: {e}")
+            self.log_file = None
         
         self.model = EmotionInferenceModel(self.cfg.model)
         self.voter = SlidingWindowVoter(self.cfg.voting)
@@ -161,6 +180,19 @@ class EmotionInferenceSystem:
             self.unity_sender.stop()
         
         self._log_performance_stats()
+        
+        # 关闭 log.txt 文件
+        if self.log_file:
+            try:
+                self._write_to_log("=" * 80 + "\n")
+                self._write_to_log(f"System stopped at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                self._write_to_log("=" * 80 + "\n\n")
+                self.log_file.close()
+            except Exception as e:
+                self.logger.error(f"Error closing log.txt: {e}")
+            finally:
+                self.log_file = None
+        
         self.logger.info("System stopped")
 
     def _main_loop(self):
@@ -184,19 +216,38 @@ class EmotionInferenceSystem:
         finally:
             self.stop()
 
+    def _write_to_log(self, log_line: str):
+        """安全地写入 log.txt"""
+        try:
+            if not self.log_file:
+                # 尝试重新打开文件
+                self.log_file = open(self.log_file_path, "a", encoding="utf-8")
+            self.log_file.write(log_line)
+            self.log_file.flush()
+        except Exception as e:
+            self.logger.error(f"Failed to write to log.txt: {e}")
+    
     def _do_inference(self):
         try:
             inference_start = time.time()
             
+            self.logger.debug("[MAIN] Step 1: Collecting multimodal features...")
             multimodal_data = self.collector.get_multimodal_features(
                 time_steps=self.cfg.model.time_steps,
                 feat_dim=self.cfg.model.feat_dim,
             )
             
+            self.logger.debug("[MAIN] Step 2: Running model prediction...")
             emotion, probs = self.model.predict(multimodal_data)
             
+            self.logger.debug("[MAIN] Step 3: Applying probability smoothing...")
             smoothed_probs = self.prob_agg.update(probs)
+            self.logger.debug(f"[MAIN] Smoothed probabilities - happy={smoothed_probs[0]:.4f}, "
+                           f"sad={smoothed_probs[1]:.4f}, normal={smoothed_probs[2]:.4f}")
+            
             current_time = time.time()
+            
+            self.logger.debug("[MAIN] Step 4: Applying voting...")
             final_emotion, transition_progress = self.voter.update(
                 emotion=emotion,
                 probabilities=smoothed_probs,
@@ -210,6 +261,7 @@ class EmotionInferenceSystem:
                 "normal": float(smoothed_probs[2]),
             }
             
+            self.logger.debug("[MAIN] Step 5: Sending to Unity...")
             self.unity_sender.send(
                 emotion=final_emotion,
                 confidence=confidence,
@@ -225,15 +277,44 @@ class EmotionInferenceSystem:
             if self._inference_count % 100 == 0:
                 self._log_performance_stats()
             
-            self.logger.debug(
-                f"Inference: {final_emotion} (conf={confidence:.2f}, "
+            # 获取投票窗口统计信息
+            window_stats = self.voter.get_window_stats() if self.voter else {}
+            
+            self.logger.info(
+                f"[MAIN] Inference #{self._inference_count}: "
+                f"Final={final_emotion} (conf={confidence:.2f}, "
                 f"transition={transition_progress:.2f}, "
-                f"latency={inference_time:.1f}ms)"
+                f"latency={inference_time:.1f}ms), "
+                f"Votes={window_stats}"
             )
+            
+            self.logger.debug(
+                f"[MAIN] Raw model output: {emotion}, probs=[{probs[0]:.4f}, {probs[1]:.4f}, {probs[2]:.4f}]"
+            )
+            
+            # 写入 log.txt
+            log_line = (
+                f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} | "
+                f"Inference #{self._inference_count:6d} | "
+                f"Final={final_emotion:8s} | "
+                f"Conf={confidence:.4f} | "
+                f"Transition={transition_progress:.4f} | "
+                f"Latency={inference_time:6.1f}ms | "
+                f"Happy={smoothed_probs[0]:.4f} | "
+                f"Sad={smoothed_probs[1]:.4f} | "
+                f"Normal={smoothed_probs[2]:.4f}\n"
+            )
+            self._write_to_log(log_line)
             
         except Exception as e:
             self.logger.error(f"Inference error: {e}")
-            self.logger.debug(traceback.format_exc())
+            self.logger.error(traceback.format_exc())
+            # 记录错误到 log.txt
+            error_log_line = (
+                f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} | "
+                f"ERROR: {str(e)}\n"
+            )
+            self._write_to_log(error_log_line)
 
     def _log_performance_stats(self):
         if self._inference_count == 0:

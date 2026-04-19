@@ -12,6 +12,13 @@ from typing import Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
+# 导入训练数据采样器
+try:
+    from src.training_data_sampler import get_sampler
+    HAS_SAMPLER = True
+except ImportError:
+    HAS_SAMPLER = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,6 +32,8 @@ class ThinkGearConfig:
     sample_rate: int = 512
     buffer_size: int = 1024
     use_mock: bool = True
+    use_training_data: bool = True  # 使用训练数据作为mock
+    features_dir: str = "../features"  # 训练数据目录
 
 
 @dataclass
@@ -59,10 +68,24 @@ class ThinkGearCollector:
         self._last_meditation = 50
         self._last_powers = [0] * 8
         
+        # 训练数据采样器
+        self._sampler = None
+        if cfg.use_training_data and HAS_SAMPLER:
+            try:
+                hold_samples = getattr(cfg, 'training_data_hold_samples', 30)
+                self._sampler = get_sampler(cfg.features_dir, hold_samples=hold_samples)
+                logger.info(f"ThinkGearCollector initialized with TRAINING DATA sampler (hold_samples={hold_samples})")
+            except Exception as e:
+                logger.warning(f"Failed to load training data sampler: {e}, falling back to simple mock")
+                self._sampler = None
+        
         is_mock = cfg.use_mock or cfg.connection_mode == "mock"
         
         if is_mock:
-            logger.info("ThinkGearCollector initialized in MOCK mode")
+            if self._sampler:
+                logger.info("ThinkGearCollector initialized in MOCK mode (using training data)")
+            else:
+                logger.info("ThinkGearCollector initialized in MOCK mode (simple mock)")
         elif cfg.connection_mode == "tcp":
             logger.info(f"ThinkGearCollector initialized for TCP: {cfg.tcp_host}:{cfg.tcp_port}")
         elif cfg.connection_mode == "serial":
@@ -98,6 +121,7 @@ class ThinkGearCollector:
     def _mock_collect_loop(self):
         """模拟数据采集（用于开发测试）"""
         t = 0.0
+        log_counter = 0
         
         while self._running:
             try:
@@ -118,6 +142,11 @@ class ThinkGearCollector:
                 att = np.clip(att, 0, 100)
                 med = np.clip(med, 0, 100)
                 powers = [max(0, p) for p in powers]
+                
+                # 每10个时间步记录一次mock数据生成日志
+                if log_counter % 10 == 0:
+                    logger.debug(f"[MOCK] Generated data - t={t:.1f}, att={att}, med={med}, "
+                               f"powers_mean={np.mean(powers):.0f}, powers_std={np.std(powers):.0f}")
                 
                 with self._lock:
                     self._last_attention = int(att)
@@ -145,6 +174,7 @@ class ThinkGearCollector:
                     self._data_buffer.append(eeg_data)
                 
                 t += 1.0
+                log_counter += 1
                 time.sleep(0.1)
                 
             except Exception as e:
@@ -267,7 +297,27 @@ class ThinkGearCollector:
     def get_multimodal_features(self, time_steps: int = 10, feat_dim: int = 4) -> Dict[str, np.ndarray]:
         """获取多模态特征数据（用于模型推理）"""
         with self._lock:
+            # 如果使用训练数据采样器
+            if self._sampler is not None:
+                result, label = self._sampler.get_sample()
+                
+                # 记录训练数据的统计信息
+                for modality, arr in result.items():
+                    logger.debug(f"[TRAIN_DATA] {modality} - shape={arr.shape}, mean={arr.mean():.4f}, "
+                               f"std={arr.std():.4f}, min={arr.min():.4f}, max={arr.max():.4f}")
+                
+                if label is not None:
+                    class_names = ["happy", "sad", "normal"]
+                    logger.debug(f"[TRAIN_DATA] Sample label: {label} ({class_names[label] if label < len(class_names) else 'unknown'})")
+                
+                return result
+            
+            # 否则使用简单mock数据
             result = {}
+            
+            # 记录原始输入数据
+            logger.debug(f"[DATA] Raw values - att={self._last_attention}, med={self._last_meditation}, "
+                       f"last_powers={self._last_powers}")
             
             for modality in ['filtered', 'powerspec', 'att', 'med']:
                 arr = np.zeros((time_steps, feat_dim), dtype=np.float32)
@@ -303,6 +353,10 @@ class ThinkGearCollector:
                         arr[i, 1] = med * t_factor * 0.8
                         arr[i, 2] = med * t_factor * 0.6
                         arr[i, 3] = med * t_factor * 0.4
+                
+                # 记录每个模态的统计信息
+                logger.debug(f"[FEATURE] {modality} - shape={arr.shape}, mean={arr.mean():.4f}, "
+                           f"std={arr.std():.4f}, min={arr.min():.4f}, max={arr.max():.4f}")
                 
                 result[modality] = arr
             

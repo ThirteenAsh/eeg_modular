@@ -10,7 +10,7 @@ public class EmotionReceiver : MonoBehaviour
     public float reconnectDelay = 3f;
     
     [Header("Emotion Settings")]
-    public float transitionSmoothTime = 1.0f;  // 改回 1 秒，更平滑
+    public float transitionSmoothTime = 1f;
     
     [Header("Skybox Settings")]
     public Material happySkybox;
@@ -137,8 +137,6 @@ public class EmotionReceiver : MonoBehaviour
     {
         try
         {
-            Debug.Log($"[EEG] 收到数据: {jsonData}");
-            
             var emotionData = JsonUtility.FromJson<EmotionData>(jsonData);
             
             if (emotionData == null)
@@ -150,19 +148,11 @@ public class EmotionReceiver : MonoBehaviour
             currentConfidence = emotionData.confidence;
             transitionProgress = emotionData.transition_progress;
             
-            Debug.Log($"[EEG] 解析结果: emotion={emotionData.emotion}, confidence={emotionData.confidence:F2}");
-            
             if (!string.IsNullOrEmpty(emotionData.emotion) && emotionData.emotion != targetEmotion)
             {
                 targetEmotion = emotionData.emotion;
-                currentEmotion = emotionData.emotion;  // 立即更新显示
                 Debug.Log($"[EEG] 🎭 New emotion detected: {emotionData.emotion} (confidence: {emotionData.confidence:F2})");
                 StartEmotionTransition(emotionData.emotion);
-            }
-            else if (!string.IsNullOrEmpty(emotionData.emotion))
-            {
-                // 即使情绪没变，也要更新 currentEmotion 显示
-                currentEmotion = emotionData.emotion;
             }
         }
         catch (System.Exception ex)

@@ -1,7 +1,7 @@
 model:
-  path: "models/best_fold4.pt"    # 你的模型文件路径
-  type: "multimodal_cnn"             # 模型类型: multimodal_cnn, lstm, svm, mlp, rf, xgb, hybrid
-  device: "auto"                      # 推理设备: auto, cpu, cuda
+  path: "../outputs/20260316_004402/models/best_fold4.pt"
+  type: "multimodal_cnn"
+  device: "auto"
   num_classes: 3
   modalities: ["filtered", "powerspec", "att", "med"]
   time_steps: 10
@@ -10,7 +10,8 @@ model:
   cvae_latent_dim: 64
   cvae_input_dim: 160
   dropout: 0.5
-  scalers_dir: "features"
+  scalers_dir: "../features"
+  skip_scaling: true  # 使用训练数据时跳过归一化（训练数据已经归一化）
 
 voting:
   window_size: 10
@@ -26,14 +27,17 @@ unity:
   ping_timeout: 10.0
 
 thinkgear:
-  connection_mode: "tcp"
+  connection_mode: "mock"
   com_port: "COM6"
   baud_rate: 57600
   tcp_host: "127.0.0.1"
   tcp_port: 13854
   sample_rate: 512
   buffer_size: 1024
-  use_mock: false
+  use_mock: true
+  use_training_data: true  # 使用训练数据作为mock（确保特征格式一致）
+  features_dir: "../features"  # 训练数据目录
+  training_data_hold_samples: 30  # 每个训练数据样本保持多少帧（越大变化越慢）
 
 inference:
   inference_interval: 0.1
@@ -41,6 +45,6 @@ inference:
   target_cpu_usage_percent: 30
 
 logging:
-  level: "INFO"
+  level: "DEBUG"
   log_file: "logs/realtime_inference.log"
   console_output: true

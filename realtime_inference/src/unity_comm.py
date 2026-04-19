@@ -46,6 +46,8 @@ class UnityWebSocketServer:
             raise
 
         self._running = True
+        
+        # 使用兼容的方式创建服务器
         self.server = await websockets.serve(
             self._handle_client,
             self.cfg.host,
@@ -66,35 +68,36 @@ class UnityWebSocketServer:
             await self.server.wait_closed()
             logger.info("Unity WebSocket server stopped")
 
-    async def _handle_client(self, websocket, path):
-        """处理客户端连接"""
+    async def _handle_client(self, websocket, path=None):
+        """处理客户端连接 - 兼容新旧版本websockets库"""
         client_id = id(websocket)
-        logger.info(f"New Unity client connected: {client_id}")
+        logger.info(f"[WS] ✅ New Unity client connected (id={client_id})")
         self.clients.add(websocket)
         
         try:
             async for message in websocket:
                 await self._on_message(websocket, message)
         except Exception as e:
-            logger.error(f"Client {client_id} error: {e}")
+            logger.error(f"[WS] ❌ Client {client_id} error: {e}")
         finally:
-            self.clients.remove(websocket)
-            logger.info(f"Unity client disconnected: {client_id}")
+            if websocket in self.clients:
+                self.clients.remove(websocket)
+            logger.info(f"[WS] 🔌 Unity client disconnected (id={client_id})")
 
     async def _on_message(self, websocket, message: str):
         """处理来自Unity的消息"""
         try:
             data = json.loads(message)
-            logger.debug(f"Received from Unity: {data}")
+            logger.debug(f"[WS] Received from Unity: {data}")
             
             for callback in self._message_callbacks:
                 try:
                     callback(data)
                 except Exception as e:
-                    logger.error(f"Callback error: {e}")
+                    logger.error(f"[WS] Callback error: {e}")
                     
         except json.JSONDecodeError as e:
-            logger.warning(f"Invalid JSON from Unity: {e}")
+            logger.warning(f"[WS] Invalid JSON from Unity: {e}")
 
     async def send_emotion_update(self, message: UnityMessage):
         """发送情绪更新到所有连接的Unity客户端"""
@@ -107,9 +110,9 @@ class UnityWebSocketServer:
                 *[client.send(payload) for client in self.clients],
                 return_exceptions=True
             )
-            logger.debug(f"Sent emotion update: {message.emotion}")
+            logger.debug(f"[WS] Sent emotion update: {message.emotion} (conf={message.confidence:.2f})")
         except Exception as e:
-            logger.error(f"Failed to send emotion update: {e}")
+            logger.error(f"[WS] Failed to send emotion update: {e}")
 
     def add_message_callback(self, callback: Callable[[Dict], None]):
         """添加Unity消息回调"""
