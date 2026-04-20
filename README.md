@@ -62,16 +62,22 @@ eeg_modular/
 │   │   └── umap_boundary.py        # UMAP边界图
 │   └── utils/                      # 工具函数 (日志/路径/种子)
 │
-├── realtime_inference/             # 实时推理系统 ⭐
+├── realtime_inference/             # 实时推理系统 ⭐ (完整实现)
 │   ├── src/
-│   │   ├── thinkgear.py            # NeuroSky数据采集
-│   │   ├── model.py                # 模型推理引擎
-│   │   ├── voting.py               # 滑动窗口投票算法
-│   │   └── unity_comm.py           # WebSocket通信
+│   │   ├── thinkgear.py            # NeuroSky数据采集 (TCP/Serial/Mock)
+│   │   ├── model.py                # CVAE+CNN模型推理引擎
+│   │   ├── voting.py               # 滑动窗口投票 + EMA平滑算法
+│   │   ├── unity_comm.py           # WebSocket通信服务器
+│   │   └── training_data_sampler.py # 训练数据采样器 (Mock模式增强)
 │   ├── unity/
-│   │   └── EmotionReceiver.cs      # Unity接收脚本
-│   ├── config/config.yaml          # 系统配置
-│   └── main.py                     # 主程序入口
+│   │   ├── EmotionReceiver.cs      # Unity接收脚本 (天空盒/音乐过渡)
+│   │   └── EmotionReceiver_Fixed.cs # 优化版Unity脚本
+│   ├── config/config.yaml          # 系统配置 (50+参数)
+│   ├── main.py                     # 主程序入口 (四层架构)
+│   ├── OPTIMIZATION_PLAN.md        # 防抖动性能优化方案
+│   ├── THINKGEAR_SETUP_GUIDE.md    # NeuroSky设备连接指南
+│   ├── requirements.txt            # Python依赖
+│   └── log.txt                     # 结构化运行日志
 │
 ├── configs/                        # 训练配置文件
 │   ├── cnn.yaml                    # CNN配置 (推荐)
@@ -294,66 +300,148 @@ python scripts/multi_model_umap.py \
 
 ### 3. 实时推理系统详解
 
-#### 系统架构
+#### 系统架构 (四层解耦设计)
 
 ```
-NeuroSky ThinkGear 设备
-        ↓ (TCP:13854 或 Serial)
-  ┌─────────────┐
-  │ 数据采集模块  │ ← thinkgear.py (支持Mock模式)
-  └──────┬──────┘
-         ↓ 多模态特征提取 (4模态×10步×16维)
-  ┌─────────────┐
-  │ CNN推理引擎  │ ← model.py (PyTorch, <30ms)
-  └──────┬──────┘
-         ↓ 概率分布 [happy:0.85, sad:0.10, normal:0.05]
-  ┌─────────────┐
-  │ 滑动窗口投票  │ ← voting.py (防抖动, EMA平滑)
-  └──────┬──────┘
-         ↓ 最终决策 + 过渡进度
-  ┌─────────────┐
-  │WebSocket服务器│ ← unity_comm.py (端口8765)
-  └──────┬──────┘
-         ↓ JSON消息
-  ┌─────────────┐
-  │ Unity场景    │ ← EmotionReceiver.cs (天空盒/音乐过渡)
-  └─────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 1: 数据采集层 (Data Collection)                      │
+│  ┌─────────────────┐                                        │
+│  │ ThinkGearCollector│ ← thinkgear.py                       │
+│  │ • TCP/Serial/Mock│   支持3种连接模式                        │
+│  │ • 训练数据采样器 │   training_data_sampler.py              │
+│  └────────┬────────┘                                        │
+│           ↓ 多模态特征提取 (4模态×10步×16维)                    │
+├───────────┼──────────────────────────────────────────────────┤
+│           ↓                                                  │
+│  Layer 2: AI推理层 (Inference Engine)                        │
+│  ┌─────────────────┐                                        │
+│  │ EmotionInferenceModel│ ← model.py                         │
+│  │ • CVAE+CNN混合模型 │   支持条件变分自编码器                  │
+│  │ • 归一化器加载     │   自动加载训练时scaler                │
+│  └────────┬────────┘                                        │
+│           ↓ 概率分布 [happy:0.85, sad:0.10, normal:0.05]       │
+├───────────┼──────────────────────────────────────────────────┤
+│           ↓                                                  │
+│  Layer 3: 决策融合层 (Decision Fusion)                       │
+│  ┌─────────────────────┐                                     │
+│  │ ProbabilityAggregator│ ← voting.py (EMA平滑)             │
+│  │ SlidingWindowVoter  │   滑动窗口投票 (防抖动)               │
+│  └────────┬────────────┘                                     │
+│           ↓ 最终决策 + 过渡进度 (0.0→1.0)                     │
+├───────────┼──────────────────────────────────────────────────┤
+│           ↓                                                  │
+│  Layer 4: 表现层 (Presentation)                              │
+│  ┌─────────────────┐                                        │
+│  │ UnityEmotionSender│ ← unity_comm.py (WebSocket:8765)      │
+│  │ EmotionReceiver.cs│ → Unity端 (天空盒/音乐过渡/调试UI)    │
+│  └─────────────────┘                                        │
+└─────────────────────────────────────────────────────────────┘
+
+核心特性:
+✅ 端到端延迟 <100ms (典型28-53ms)
+✅ 三级日志系统 (DEBUG/INFO/ERROR)
+✅ 结构化日志输出 (log.txt, 可导入Excel分析)
+✅ 性能监控 (每100次推理统计一次)
+✅ 优雅启停 (信号处理 + 资源清理)
 ```
 
-#### 关键配置项
+#### 关键配置项 (完整50+参数)
 
 ```yaml
 # realtime_inference/config.yaml
 
+# ===== 模型配置 (11项) =====
 model:
   path: "models/best_fold4.pt"      # CNN模型路径
-  type: "multimodal_cnn"
-  device: "auto"                      # auto/cpu/cuda
+  type: "multimodal_cnn"              # 模型类型
+  device: "auto"                      # 推理设备 (auto/cpu/cuda)
+  num_classes: 3                      # 情绪类别数
+  modalities: ["filtered", "powerspec", "att", "med"]  # 4种模态
+  time_steps: 10                     # 时间步数
+  feat_dim: 4                        # 特征维度
+  use_cvae: true                     # 是否使用CVAE编码器
+  cvae_latent_dim: 64                # CVAE潜在空间维度
+  cvae_input_dim: 160               # CVAE输入维度
+  dropout: 0.5                       # Dropout比率
+  scalers_dir: "../features"         # 归一化器目录
+  skip_scaling: true                 # 跳过归一化(训练数据已归一化)
 
+# ===== 投票算法配置 (4项) =====
 voting:
-  window_size: 10                      # 投票窗口大小
-  vote_threshold: 0.6                  # 投票阈值
-  transition_duration: 1.0            # 过渡动画时长(秒)
+  window_size: 10                    # 滑动窗口大小
+  vote_threshold: 0.6                # 投票阈值(0-1)
+  transition_duration: 1.0           # 过渡动画时长(秒)
+  min_stability_frames: 3            # 最小稳定帧数
 
-thinkgear:
-  use_mock: true                       # 使用模拟数据(开发阶段)
-  connection_mode: tcp                # tcp/serial/mock
-  sample_rate: 512                     # 采样率(Hz)
-
+# ===== Unity通信配置 (5项) =====
 unity:
   host: "localhost"
-  port: 8765                          # WebSocket端口
+  port: 8765                         # WebSocket端口
+  max_connections: 5                  # 最大连接数
+  ping_interval: 30.0                # 心跳间隔(秒)
+  ping_timeout: 10.0                 # 心跳超时(秒)
+
+# ===== ThinkGear EEG设备配置 (11项) =====
+thinkgear:
+  connection_mode: "mock"            # 连接模式 (tcp/serial/mock)
+  com_port: "COM6"                   # 串口号
+  baud_rate: 57600                   # 波特率
+  tcp_host: "127.0.0.1"             # TCP主机地址
+  tcp_port: 13854                    # TCP端口
+  sample_rate: 512                   # 采样率(Hz)
+  buffer_size: 1024                  # 缓冲区大小
+  use_mock: true                     # 使用模拟数据
+  use_training_data: true            # 使用训练数据作为mock ⭐新增
+  features_dir: "../features"        # 训练数据目录
+  training_data_hold_samples: 30    # 每个样本保持帧数 ⭐新增
+
+# ===== 性能控制配置 (3项) =====
+inference:
+  inference_interval: 0.1            # 推理间隔(秒)
+  max_inference_latency_ms: 200       # 最大允许延迟(ms)
+  target_cpu_usage_percent: 30        # 目标CPU占用(%)
+
+# ===== 日志配置 (2项) =====
+logging:
+  level: "DEBUG"                     # 日志级别 (DEBUG/INFO/WARNING/ERROR)
+  log_file: "logs/realtime_inference.log"  # 日志文件路径
+  console_output: true               # 是否输出到控制台
 ```
 
-#### 开发模式 (Mock数据)
+#### 开发模式详解
 
-无需真实EEG设备即可开发:
-
+**模式1: 简单Mock数据** (快速测试,无需训练数据)
 ```yaml
 thinkgear:
   use_mock: true
-  use_training_data: true  # 回放训练数据,确保特征格式一致
+  use_training_data: false          # 关闭训练数据采样
 ```
+特点: 使用正弦波+噪声生成模拟EEG数据,适合快速验证系统流程。
+
+**模式2: 训练数据回放** (推荐开发阶段) ⭐新增
+```yaml
+thinkgear:
+  use_mock: true
+  use_training_data: true           # 启用训练数据采样器
+  features_dir: "../features"       # 训练特征目录
+  training_data_hold_samples: 30   # 每个样本保持30帧(变化更平滑)
+```
+特点:
+✅ 从真实训练数据中采样,确保特征格式100%一致
+✅ 可控制变化速度(hold_samples越大变化越慢)
+✅ 自动循环遍历所有样本,覆盖所有情绪类别
+✅ 日志中显示真实标签,便于调试模型推理准确性
+
+**模式3: 真实设备连接** (生产部署)
+```yaml
+thinkgear:
+  use_mock: false
+  connection_mode: tcp             # 或 serial
+  tcp_host: "127.0.0.1"
+  tcp_port: 13854
+```
+前提: 需先启动ThinkGear Connector并连接硬件设备。
+详见: [ThinkGear连接指南](./realtime_inference/THINKGEAR_SETUP_GUIDE.md)
 
 ### 4. AR/VR集成指南
 
@@ -608,9 +696,9 @@ outputs/run_20260419_143022/
 ## 📚 参考资源
 
 ### 文档
-- [AGENTS.md](./AGENTS.md) - 完整技术规范与架构设计
-- [实时推理系统文档](./realtime_inference/OPTIMIZATION_PLAN.md) - 性能优化方案
-- [ThinkGear配置指南](./realtime_inference/THINKGEAR_SETUP_GUIDE.md) - EEG设备接入教程
+- [AGENTS.md](./AGENTS.md) - 完整技术规范与架构设计 (含模型性能、超参数调优指南)
+- [实时推理系统文档](./realtime_inference/OPTIMIZATION_PLAN.md) - 防抖动性能优化方案 ⭐新增
+- [ThinkGear配置指南](./realtime_inference/THINKGEAR_SETUP_GUIDE.md) - NeuroSky设备接入教程 ⭐新增
 
 ### 外部链接
 - [NeuroSky开发者文档](https://developer.neurosky.com/) - ThinkGear API参考
