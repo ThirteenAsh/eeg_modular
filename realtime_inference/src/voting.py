@@ -100,7 +100,7 @@ class SlidingWindowVoter:
             avg_probs /= len(self.window)
         
         total_votes = len(self.window)
-        dominant_emotion = max(votes.items(), key=lambda x: x[0])[0]
+        dominant_emotion = max(votes.items(), key=lambda x: x[1])[0]
         max_votes = votes.get(dominant_emotion, 0)
         confidence = max_votes / total_votes
         
