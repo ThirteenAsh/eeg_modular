@@ -52,6 +52,14 @@ config.json
 realtime_inference/features/
 realtime_inference/models/
 
+# Features files (training data)
+/features/
+*.npy
+
+# Realtime inference model and features files
+realtime_inference/features/
+realtime_inference/models/
+
 # Temporary files
 temp/
 tmp/
