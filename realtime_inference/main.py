@@ -76,7 +76,7 @@ def load_config(config_path: str) -> SystemConfig:
                 cvae_latent_dim=model_cfg.get("cvae_latent_dim", 64),
                 cvae_input_dim=model_cfg.get("cvae_input_dim", 160),
                 dropout=model_cfg.get("dropout", 0.5),
-                scalers_dir=Path(model_cfg["scalers_dir"]) if "scalers_dir" in model_cfg else None,
+                scalers_dir=Path(model_cfg["scalers_dir"]) if "scalers_dir" in model_cfg and model_cfg["scalers_dir"] is not None else None,
                 skip_scaling=model_cfg.get("skip_scaling", False),
             ),
         voting=VotingConfig(

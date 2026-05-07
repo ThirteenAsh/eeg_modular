@@ -1,5 +1,5 @@
 model:
-  path: "../outputs/20260316_004402/models/best_fold4.pt"
+  path: "../outputs/CNN/models/best_fold4.pt"
   type: "multimodal_cnn"
   device: "auto"
   num_classes: 3
@@ -10,7 +10,7 @@ model:
   cvae_latent_dim: 64
   cvae_input_dim: 160
   dropout: 0.5
-  scalers_dir: "../features"
+  scalers_dir: null
   skip_scaling: true  # 使用训练数据时跳过归一化（训练数据已经归一化）
 
 voting:
