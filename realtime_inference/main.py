@@ -103,6 +103,7 @@ def load_config(config_path: str) -> SystemConfig:
             use_mock=thinkgear_cfg.get("use_mock", False),
             use_training_data=thinkgear_cfg.get("use_training_data", True),
             features_dir=thinkgear_cfg.get("features_dir", "../features"),
+            stale_timeout_seconds=thinkgear_cfg.get("stale_timeout_seconds", 2.5),
         ),
         inference=inference_cfg,
         logging=logging_cfg,
@@ -124,6 +125,7 @@ class EmotionInferenceSystem:
         self._start_time: float = 0.0
         self._inference_count = 0
         self._total_inference_time = 0.0
+        self._last_offline_log_time = 0.0
         
         # log.txt 文件处理
         self.log_file_path = Path("log.txt")
@@ -159,6 +161,7 @@ class EmotionInferenceSystem:
         self._start_time = time.time()
         self._inference_count = 0
         self._total_inference_time = 0.0
+        self._last_offline_log_time = 0.0
         
         self.logger.info("Starting system...")
         
@@ -230,6 +233,45 @@ class EmotionInferenceSystem:
     def _do_inference(self):
         try:
             inference_start = time.time()
+            current_time = time.time()
+            status = self.collector.get_status()
+
+            if not status["device_connected"]:
+                self.unity_sender.send(
+                    emotion="offline",
+                    confidence=0.0,
+                    transition_progress=0.0,
+                    probabilities={"happy": 0.0, "sad": 0.0, "normal": 0.0},
+                    timestamp=current_time,
+                    device_connected=False,
+                    stream_connected=bool(status["stream_connected"]),
+                    data_age_seconds=float(status["data_age_seconds"]),
+                    packet_age_seconds=float(status["packet_age_seconds"]),
+                    poor_signal=int(status["poor_signal"]),
+                    attention=int(status["attention"]),
+                    meditation=int(status["meditation"]),
+                    source=str(status["source"]),
+                    raw_emotion="offline",
+                    esense_age_seconds=float(status["esense_age_seconds"]),
+                    power_age_seconds=float(status["power_age_seconds"]),
+                    raw_packet_count=int(status["raw_packet_count"]),
+                    esense_packet_count=int(status["esense_packet_count"]),
+                    power_packet_count=int(status["power_packet_count"]),
+                )
+                if current_time - self._last_offline_log_time >= 2.0:
+                    self._last_offline_log_time = current_time
+                    self.logger.info(
+                        "[MAIN] Device offline/stale: "
+                        f"stream={status['stream_connected']}, "
+                        f"source={status['source']}, "
+                        f"poor_signal={status['poor_signal']}, "
+                        f"att={status['attention']}, med={status['meditation']}, "
+                        f"data_age={status['data_age_seconds']:.1f}s, "
+                        f"esense_age={status['esense_age_seconds']:.1f}s, "
+                        f"raw/esense/power={status['raw_packet_count']}/"
+                        f"{status['esense_packet_count']}/{status['power_packet_count']}"
+                    )
+                return
             
             self.logger.debug("[MAIN] Step 1: Collecting multimodal features...")
             multimodal_data = self.collector.get_multimodal_features(
@@ -244,8 +286,6 @@ class EmotionInferenceSystem:
             smoothed_probs = self.prob_agg.update(probs)
             self.logger.debug(f"[MAIN] Smoothed probabilities - happy={smoothed_probs[0]:.4f}, "
                            f"sad={smoothed_probs[1]:.4f}, normal={smoothed_probs[2]:.4f}")
-            
-            current_time = time.time()
             
             self.logger.debug("[MAIN] Step 4: Applying voting...")
             final_emotion, transition_progress = self.voter.update(
@@ -268,6 +308,20 @@ class EmotionInferenceSystem:
                 transition_progress=transition_progress,
                 probabilities=prob_dict,
                 timestamp=current_time,
+                device_connected=bool(status["device_connected"]),
+                stream_connected=bool(status["stream_connected"]),
+                data_age_seconds=float(status["data_age_seconds"]),
+                packet_age_seconds=float(status["packet_age_seconds"]),
+                poor_signal=int(status["poor_signal"]),
+                attention=int(status["attention"]),
+                meditation=int(status["meditation"]),
+                source=str(status["source"]),
+                raw_emotion=emotion,
+                esense_age_seconds=float(status["esense_age_seconds"]),
+                power_age_seconds=float(status["power_age_seconds"]),
+                raw_packet_count=int(status["raw_packet_count"]),
+                esense_packet_count=int(status["esense_packet_count"]),
+                power_packet_count=int(status["power_packet_count"]),
             )
             
             inference_time = (time.time() - inference_start) * 1000
@@ -285,6 +339,8 @@ class EmotionInferenceSystem:
                 f"Final={final_emotion} (conf={confidence:.2f}, "
                 f"transition={transition_progress:.2f}, "
                 f"latency={inference_time:.1f}ms), "
+                f"Raw={emotion}, EEG att={status['attention']}, med={status['meditation']}, "
+                f"poor={status['poor_signal']}, source={status['source']}, "
                 f"Votes={window_stats}"
             )
             
@@ -300,6 +356,11 @@ class EmotionInferenceSystem:
                 f"Conf={confidence:.4f} | "
                 f"Transition={transition_progress:.4f} | "
                 f"Latency={inference_time:6.1f}ms | "
+                f"Raw={emotion:8s} | "
+                f"Att={int(status['attention']):3d} | "
+                f"Med={int(status['meditation']):3d} | "
+                f"Poor={int(status['poor_signal']):3d} | "
+                f"Source={status['source']} | "
                 f"Happy={smoothed_probs[0]:.4f} | "
                 f"Sad={smoothed_probs[1]:.4f} | "
                 f"Normal={smoothed_probs[2]:.4f}\n"

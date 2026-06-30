@@ -16,6 +16,20 @@ class UnityMessage:
     transition_progress: float
     probabilities: Dict[str, float]
     timestamp: float
+    device_connected: bool = True
+    stream_connected: bool = True
+    data_age_seconds: float = 0.0
+    packet_age_seconds: float = 0.0
+    poor_signal: int = 0
+    attention: int = 0
+    meditation: int = 0
+    source: str = "unknown"
+    raw_emotion: str = "unknown"
+    esense_age_seconds: float = 999999.0
+    power_age_seconds: float = 999999.0
+    raw_packet_count: int = 0
+    esense_packet_count: int = 0
+    power_packet_count: int = 0
 
 
 @dataclass
@@ -169,7 +183,13 @@ class UnityEmotionSender:
             logger.info("UnityEmotionSender stopped")
 
     def send(self, emotion: str, confidence: float, transition_progress: float, 
-             probabilities: Dict[str, float], timestamp: float):
+             probabilities: Dict[str, float], timestamp: float, device_connected: bool = True,
+             stream_connected: bool = True, data_age_seconds: float = 0.0,
+             packet_age_seconds: float = 0.0, poor_signal: int = 0,
+             attention: int = 0, meditation: int = 0, source: str = "unknown",
+             raw_emotion: str = "unknown", esense_age_seconds: float = 999999.0,
+             power_age_seconds: float = 999999.0, raw_packet_count: int = 0,
+             esense_packet_count: int = 0, power_packet_count: int = 0):
         """发送情绪更新（非阻塞）"""
         if self._loop and self._server:
             message = UnityMessage(
@@ -178,6 +198,20 @@ class UnityEmotionSender:
                 transition_progress=transition_progress,
                 probabilities=probabilities,
                 timestamp=timestamp,
+                device_connected=device_connected,
+                stream_connected=stream_connected,
+                data_age_seconds=data_age_seconds,
+                packet_age_seconds=packet_age_seconds,
+                poor_signal=poor_signal,
+                attention=attention,
+                meditation=meditation,
+                source=source,
+                raw_emotion=raw_emotion,
+                esense_age_seconds=esense_age_seconds,
+                power_age_seconds=power_age_seconds,
+                raw_packet_count=raw_packet_count,
+                esense_packet_count=esense_packet_count,
+                power_packet_count=power_packet_count,
             )
             asyncio.run_coroutine_threadsafe(
                 self._server.send_emotion_update(message),

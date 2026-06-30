@@ -32,6 +32,7 @@ class ThinkGearConfig:
     sample_rate: int = 512
     buffer_size: int = 1024
     use_mock: bool = True
+    stale_timeout_seconds: float = 2.5
     use_training_data: bool = True  # 使用训练数据作为mock
     features_dir: str = "../features"  # 训练数据目录
 
@@ -67,6 +68,14 @@ class ThinkGearCollector:
         self._last_attention = 50
         self._last_meditation = 50
         self._last_powers = [0] * 8
+        self._last_packet_time = 0.0
+        self._last_valid_data_time = 0.0
+        self._last_esense_time = 0.0
+        self._last_power_time = 0.0
+        self._last_poor_signal = 200
+        self._raw_packet_count = 0
+        self._esense_packet_count = 0
+        self._power_packet_count = 0
         
         # 训练数据采样器
         self._sampler = None
@@ -152,6 +161,14 @@ class ThinkGearCollector:
                     self._last_attention = int(att)
                     self._last_meditation = int(med)
                     self._last_powers = powers
+                    self._last_packet_time = time.time()
+                    self._last_valid_data_time = self._last_packet_time
+                    self._last_esense_time = self._last_packet_time
+                    self._last_power_time = self._last_packet_time
+                    self._last_poor_signal = 0
+                    self._raw_packet_count += 1
+                    self._esense_packet_count += 1
+                    self._power_packet_count += 1
                     raw_val = int(1000 * np.sin(t / 5.0))
                     self._raw_buffer.append(raw_val)
                 
@@ -193,7 +210,7 @@ class ThinkGearCollector:
             sock.connect((self.cfg.tcp_host, self.cfg.tcp_port))
             logger.info("Connected to ThinkGear Connector!")
             
-            config = {"enableRawOutput": False, "format": "Json"}
+            config = {"enableRawOutput": True, "format": "Json"}
             sock.send(json.dumps(config).encode())
             logger.info("Sent configuration to ThinkGear Connector")
             
@@ -236,18 +253,34 @@ class ThinkGearCollector:
         """解析ThinkGear Connector的JSON数据（和之前程序保持一致）"""
         try:
             data = json.loads(json_str)
+            now = time.time()
             
             with self._lock:
+                self._last_packet_time = now
+                if 'poorSignalLevel' in data:
+                    self._last_poor_signal = int(data.get('poorSignalLevel') or 0)
+
+                if 'rawEeg' in data:
+                    self._raw_packet_count += 1
+                    self._raw_buffer.append(int(data.get('rawEeg') or 0))
+                    return
+
                 attention = data.get('attention', self._last_attention)
                 meditation = data.get('meditation', self._last_meditation)
+                has_esense = False
+                has_power = 'eegPower' in data
                 
                 if 'eSense' in data:
                     esense = data['eSense']
                     attention = esense.get('attention', attention)
                     meditation = esense.get('meditation', meditation)
+                    has_esense = True
                 
-                self._last_attention = attention
-                self._last_meditation = meditation
+                self._last_attention = int(np.clip(int(attention), 0, 100))
+                self._last_meditation = int(np.clip(int(meditation), 0, 100))
+                if has_esense:
+                    self._last_esense_time = now
+                    self._esense_packet_count += 1
                 
                 if 'eegPower' in data:
                     eeg_power = data['eegPower']
@@ -261,6 +294,11 @@ class ThinkGearCollector:
                         eeg_power.get('lowGamma', self._last_powers[6]),
                         eeg_power.get('highGamma', self._last_powers[7]),
                     ]
+                    self._last_power_time = now
+                    self._power_packet_count += 1
+                
+                if (has_esense or has_power) and self._last_poor_signal < 200:
+                    self._last_valid_data_time = now
                 
                 raw_value = int(sum(self._last_powers) / 800) if sum(self._last_powers) > 0 else 0
                 self._raw_buffer.append(raw_value)
@@ -294,6 +332,46 @@ class ThinkGearCollector:
                 return self._data_buffer[-1]
         return None
 
+    def get_status(self) -> Dict[str, object]:
+        """Return stream/device freshness for inference gating and Unity UI."""
+        with self._lock:
+            now = time.time()
+            packet_age = now - self._last_packet_time if self._last_packet_time > 0 else 999999.0
+            data_age = now - self._last_valid_data_time if self._last_valid_data_time > 0 else 999999.0
+            esense_age = now - self._last_esense_time if self._last_esense_time > 0 else 999999.0
+            power_age = now - self._last_power_time if self._last_power_time > 0 else 999999.0
+            timeout = self.cfg.stale_timeout_seconds
+            stream_connected = packet_age <= timeout
+            has_live_esense = esense_age <= timeout
+            has_live_power = power_age <= timeout
+            device_connected = has_live_esense and self._last_poor_signal < 200
+            if self.cfg.use_mock or self.cfg.connection_mode == "mock":
+                source = "mock"
+            elif not stream_connected:
+                source = f"{self.cfg.connection_mode}/stale"
+            elif has_live_esense:
+                source = f"{self.cfg.connection_mode}/esense"
+            elif has_live_power:
+                source = f"{self.cfg.connection_mode}/power-only"
+            else:
+                source = f"{self.cfg.connection_mode}/raw-only"
+
+            return {
+                "stream_connected": stream_connected,
+                "device_connected": device_connected,
+                "packet_age_seconds": packet_age,
+                "data_age_seconds": data_age,
+                "esense_age_seconds": esense_age,
+                "power_age_seconds": power_age,
+                "poor_signal": int(self._last_poor_signal),
+                "attention": int(self._last_attention),
+                "meditation": int(self._last_meditation),
+                "source": source,
+                "raw_packet_count": int(self._raw_packet_count),
+                "esense_packet_count": int(self._esense_packet_count),
+                "power_packet_count": int(self._power_packet_count),
+            }
+
     def get_multimodal_features(self, time_steps: int = 10, feat_dim: int = 4) -> Dict[str, np.ndarray]:
         """获取多模态特征数据（用于模型推理）"""
         with self._lock:
@@ -319,40 +397,58 @@ class ThinkGearCollector:
             logger.debug(f"[DATA] Raw values - att={self._last_attention}, med={self._last_meditation}, "
                        f"last_powers={self._last_powers}")
             
+            recent = list(self._data_buffer)[-time_steps:]
+            if recent:
+                while len(recent) < time_steps:
+                    recent.insert(0, recent[0])
+
             for modality in ['filtered', 'powerspec', 'att', 'med']:
                 arr = np.zeros((time_steps, feat_dim), dtype=np.float32)
                 
                 if modality == 'filtered':
-                    for i in range(time_steps):
-                        for j in range(feat_dim):
-                            t_factor = (i + 1) / time_steps
-                            arr[i, j] = 0.5 + 0.5 * np.sin(t_factor * 5.0 + j)
+                    raw_values = list(self._raw_buffer)
+                    if raw_values:
+                        chunks = np.array_split(np.array(raw_values, dtype=np.float32), time_steps)
+                        for i, chunk in enumerate(chunks[-time_steps:]):
+                            scaled = chunk / 2048.0
+                            arr[i, 0] = float(np.mean(scaled))
+                            arr[i, 1] = float(np.std(scaled))
+                            arr[i, 2] = float(np.max(scaled))
+                            arr[i, 3] = float(np.min(scaled))
                 
                 elif modality == 'powerspec':
-                    powers = np.array(self._last_powers, dtype=np.float32)
-                    for i in range(time_steps):
-                        t_factor = (i + 1) / time_steps
-                        for j in range(feat_dim):
-                            if j < len(powers):
-                                arr[i, j] = powers[j % len(powers)] * t_factor * 0.001
+                    samples = recent if recent else [None] * time_steps
+                    for i, sample in enumerate(samples[-time_steps:]):
+                        if sample is None:
+                            powers = np.array(self._last_powers, dtype=np.float32)
+                        else:
+                            powers = np.array([
+                                sample.delta, sample.theta, sample.alpha1, sample.alpha2,
+                                sample.beta1, sample.beta2, sample.gamma1, sample.gamma2,
+                            ], dtype=np.float32)
+                        scaled = np.log1p(np.maximum(powers, 0.0)) / 20.0
+                        arr[i, 0] = float(np.mean(scaled))
+                        arr[i, 1] = float(np.std(scaled))
+                        arr[i, 2] = float(np.max(scaled))
+                        arr[i, 3] = float(np.min(scaled))
                 
                 elif modality == 'att':
-                    att = self._last_attention / 100.0
-                    for i in range(time_steps):
-                        t_factor = (i + 1) / time_steps
-                        arr[i, 0] = att * t_factor
-                        arr[i, 1] = att * t_factor * 0.8
-                        arr[i, 2] = att * t_factor * 0.6
-                        arr[i, 3] = att * t_factor * 0.4
+                    samples = recent if recent else [None] * time_steps
+                    for i, sample in enumerate(samples[-time_steps:]):
+                        value = (sample.attention if sample is not None else self._last_attention) / 100.0
+                        arr[i, 0] = value
+                        arr[i, 1] = 0.0
+                        arr[i, 2] = value
+                        arr[i, 3] = value
                 
                 elif modality == 'med':
-                    med = self._last_meditation / 100.0
-                    for i in range(time_steps):
-                        t_factor = (i + 1) / time_steps
-                        arr[i, 0] = med * t_factor
-                        arr[i, 1] = med * t_factor * 0.8
-                        arr[i, 2] = med * t_factor * 0.6
-                        arr[i, 3] = med * t_factor * 0.4
+                    samples = recent if recent else [None] * time_steps
+                    for i, sample in enumerate(samples[-time_steps:]):
+                        value = (sample.meditation if sample is not None else self._last_meditation) / 100.0
+                        arr[i, 0] = value
+                        arr[i, 1] = 0.0
+                        arr[i, 2] = value
+                        arr[i, 3] = value
                 
                 # 记录每个模态的统计信息
                 logger.debug(f"[FEATURE] {modality} - shape={arr.shape}, mean={arr.mean():.4f}, "

@@ -31,6 +31,7 @@ public class EmotionReceiver : MonoBehaviour
     
     private WebSocket ws;
     private Coroutine reconnectCoroutine;
+    private Coroutine crossfadeCoroutine;
     private string targetEmotion = "normal";
     private float currentMusicVolume = 1f;
     private AudioSource audioSource;
@@ -41,9 +42,9 @@ public class EmotionReceiver : MonoBehaviour
     private Dictionary<string, Material> emotionSkyboxes;
     private Dictionary<string, AudioClip> emotionMusic;
     
-    // 线程安全的消息队列
     private Queue<string> messageQueue = new Queue<string>();
     private object queueLock = new object();
+    private bool isDestroying = false;
 
     private void Start()
     {
@@ -98,6 +99,12 @@ public class EmotionReceiver : MonoBehaviour
 
     private void Connect()
     {
+        if (!isActiveAndEnabled)
+        {
+            Debug.LogWarning("[EEG] Cannot connect: GameObject is inactive");
+            return;
+        }
+
         if (ws != null && ws.IsAlive)
         {
             return;
@@ -117,16 +124,11 @@ public class EmotionReceiver : MonoBehaviour
     private void OnOpen(object sender, System.EventArgs e)
     {
         Debug.Log("[EEG] ✅ Connected to emotion server!");
-        if (reconnectCoroutine != null)
-        {
-            StopCoroutine(reconnectCoroutine);
-            reconnectCoroutine = null;
-        }
+        StopReconnectCoroutine();
     }
 
     private void OnMessage(object sender, MessageEventArgs e)
     {
-        // 将消息加入队列（线程安全）
         lock (queueLock)
         {
             messageQueue.Enqueue(e.Data);
@@ -173,8 +175,25 @@ public class EmotionReceiver : MonoBehaviour
         
         if (emotionMusic.TryGetValue(newEmotion, out AudioClip newMusic))
         {
-            StartCoroutine(CrossfadeMusic(newMusic));
+            StartCrossfadeCoroutine(newMusic);
         }
+    }
+
+    private void StartCrossfadeCoroutine(AudioClip newMusic)
+    {
+        if (!isActiveAndEnabled)
+        {
+            Debug.LogWarning("[EEG] Cannot start crossfade: GameObject is inactive");
+            return;
+        }
+        
+        if (crossfadeCoroutine != null)
+        {
+            StopCoroutine(crossfadeCoroutine);
+            crossfadeCoroutine = null;
+        }
+        
+        crossfadeCoroutine = StartCoroutine(CrossfadeMusic(newMusic));
     }
 
     private IEnumerator CrossfadeMusic(AudioClip newClip)
@@ -187,7 +206,7 @@ public class EmotionReceiver : MonoBehaviour
         crossfadeSource.Play();
         
         float elapsed = 0f;
-        while (elapsed < musicTransitionTime)
+        while (elapsed < musicTransitionTime && isActiveAndEnabled)
         {
             elapsed += Time.deltaTime;
             float t = elapsed / musicTransitionTime;
@@ -205,13 +224,15 @@ public class EmotionReceiver : MonoBehaviour
         crossfadeSource.Stop();
         crossfadeSource.volume = 0f;
         audioSource.volume = 1f;
+        
+        crossfadeCoroutine = null;
     }
 
     private void Update()
     {
-        // 在主线程处理消息队列
-        ProcessMessageQueue();
+        if (!isActiveAndEnabled) return;
         
+        ProcessMessageQueue();
         UpdateSkyboxTransition();
     }
 
@@ -262,36 +283,98 @@ public class EmotionReceiver : MonoBehaviour
     {
         Debug.Log($"[EEG] Disconnected from server. Code: {e.Code}, Reason: {e.Reason}");
         
+        if (isDestroying || !isActiveAndEnabled)
+        {
+            Debug.Log("[EEG] Skip reconnect: GameObject is being destroyed or inactive");
+            return;
+        }
+        
+        StartReconnectCoroutine();
+    }
+
+    private void StartReconnectCoroutine()
+    {
+        if (!isActiveAndEnabled)
+        {
+            Debug.LogWarning("[EEG] Cannot start reconnect: GameObject is inactive");
+            return;
+        }
+        
         if (reconnectCoroutine == null)
         {
             reconnectCoroutine = StartCoroutine(Reconnect());
         }
     }
 
+    private void StopReconnectCoroutine()
+    {
+        if (reconnectCoroutine != null)
+        {
+            StopCoroutine(reconnectCoroutine);
+            reconnectCoroutine = null;
+        }
+    }
+
     private IEnumerator Reconnect()
     {
         int retryCount = 0;
-        while (ws == null || !ws.IsAlive)
+        while (!isDestroying && isActiveAndEnabled && (ws == null || !ws.IsAlive))
         {
             retryCount++;
             Debug.Log($"[EEG] Attempting to reconnect... ({retryCount})");
             yield return new WaitForSeconds(reconnectDelay);
-            Connect();
+            
+            if (!isDestroying && isActiveAndEnabled)
+            {
+                Connect();
+            }
         }
+        
+        reconnectCoroutine = null;
+    }
+
+    private void OnDisable()
+    {
+        StopAllCoroutines();
+        reconnectCoroutine = null;
+        crossfadeCoroutine = null;
     }
 
     private void OnDestroy()
     {
+        isDestroying = true;
+        
+        StopAllCoroutines();
+        reconnectCoroutine = null;
+        crossfadeCoroutine = null;
+        
         if (ws != null)
         {
-            ws.Close();
-            ws = null;
+            ws.OnOpen -= OnOpen;
+            ws.OnMessage -= OnMessage;
+            ws.OnError -= OnError;
+            ws.OnClose -= OnClose;
+            
+            try
+            {
+                ws.Close();
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogWarning($"[EEG] Error closing WebSocket: {ex.Message}");
+            }
+            finally
+            {
+                ws = null;
+            }
         }
+        
+        Debug.Log("[EEG] EmotionReceiver destroyed");
     }
 
     private void OnGUI()
     {
-        if (!showDebugInfo) return;
+        if (!showDebugInfo || !isActiveAndEnabled) return;
         
         GUILayout.BeginArea(new Rect(10, 10, 350, 250));
         GUILayout.BeginVertical("box");
