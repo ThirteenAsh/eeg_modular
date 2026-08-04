@@ -31,6 +31,7 @@ class ThinkGearConfig:
     tcp_port: int = 13854
     sample_rate: int = 512
     buffer_size: int = 1024
+    analysis_window_seconds: float = 30.0
     use_mock: bool = True
     stale_timeout_seconds: float = 2.5
     use_training_data: bool = True  # 使用训练数据作为mock
@@ -63,7 +64,9 @@ class ThinkGearCollector:
         self._lock = Lock()
         
         self._data_buffer: Deque[EEGData] = deque(maxlen=cfg.buffer_size)
-        self._raw_buffer: Deque[int] = deque(maxlen=cfg.sample_rate * 2)
+        self._raw_buffer: Deque[int] = deque(
+            maxlen=round(cfg.sample_rate * cfg.analysis_window_seconds)
+        )
         
         self._last_attention = 50
         self._last_meditation = 50
@@ -370,6 +373,9 @@ class ThinkGearCollector:
                 "raw_packet_count": int(self._raw_packet_count),
                 "esense_packet_count": int(self._esense_packet_count),
                 "power_packet_count": int(self._power_packet_count),
+                "buffer_ready": len(self._raw_buffer) >= self._raw_buffer.maxlen,
+                "buffer_fill_seconds": len(self._raw_buffer) / float(self.cfg.sample_rate),
+                "analysis_window_seconds": float(self.cfg.analysis_window_seconds),
             }
 
     def get_multimodal_features(self, time_steps: int = 10, feat_dim: int = 4) -> Dict[str, np.ndarray]:
@@ -397,10 +403,8 @@ class ThinkGearCollector:
             logger.debug(f"[DATA] Raw values - att={self._last_attention}, med={self._last_meditation}, "
                        f"last_powers={self._last_powers}")
             
-            recent = list(self._data_buffer)[-time_steps:]
-            if recent:
-                while len(recent) < time_steps:
-                    recent.insert(0, recent[0])
+            cutoff = time.time() - self.cfg.analysis_window_seconds
+            recent = [sample for sample in self._data_buffer if sample.timestamp >= cutoff]
 
             for modality in ['filtered', 'powerspec', 'att', 'med']:
                 arr = np.zeros((time_steps, feat_dim), dtype=np.float32)
@@ -410,45 +414,41 @@ class ThinkGearCollector:
                     if raw_values:
                         chunks = np.array_split(np.array(raw_values, dtype=np.float32), time_steps)
                         for i, chunk in enumerate(chunks[-time_steps:]):
-                            scaled = chunk / 2048.0
-                            arr[i, 0] = float(np.mean(scaled))
-                            arr[i, 1] = float(np.std(scaled))
-                            arr[i, 2] = float(np.max(scaled))
-                            arr[i, 3] = float(np.min(scaled))
+                            arr[i, 0] = float(np.mean(chunk))
+                            arr[i, 1] = float(np.std(chunk))
+                            arr[i, 2] = float(np.max(chunk))
+                            arr[i, 3] = float(np.min(chunk))
                 
                 elif modality == 'powerspec':
-                    samples = recent if recent else [None] * time_steps
-                    for i, sample in enumerate(samples[-time_steps:]):
-                        if sample is None:
-                            powers = np.array(self._last_powers, dtype=np.float32)
-                        else:
-                            powers = np.array([
+                    sample_groups = np.array_split(np.asarray(recent, dtype=object), time_steps)
+                    for i, group in enumerate(sample_groups):
+                        values = []
+                        for sample in group:
+                            values.extend([
                                 sample.delta, sample.theta, sample.alpha1, sample.alpha2,
                                 sample.beta1, sample.beta2, sample.gamma1, sample.gamma2,
-                            ], dtype=np.float32)
-                        scaled = np.log1p(np.maximum(powers, 0.0)) / 20.0
-                        arr[i, 0] = float(np.mean(scaled))
-                        arr[i, 1] = float(np.std(scaled))
-                        arr[i, 2] = float(np.max(scaled))
-                        arr[i, 3] = float(np.min(scaled))
+                            ])
+                        powers = np.asarray(values or self._last_powers, dtype=np.float32)
+                        scaled = np.log1p(np.maximum(powers, 0.0))
+                        arr[i] = [np.mean(scaled), np.std(scaled), np.max(scaled), np.min(scaled)]
                 
                 elif modality == 'att':
-                    samples = recent if recent else [None] * time_steps
-                    for i, sample in enumerate(samples[-time_steps:]):
-                        value = (sample.attention if sample is not None else self._last_attention) / 100.0
-                        arr[i, 0] = value
-                        arr[i, 1] = 0.0
-                        arr[i, 2] = value
-                        arr[i, 3] = value
+                    sample_groups = np.array_split(np.asarray(recent, dtype=object), time_steps)
+                    for i, group in enumerate(sample_groups):
+                        values = np.asarray(
+                            [sample.attention for sample in group] or [self._last_attention],
+                            dtype=np.float32,
+                        )
+                        arr[i] = [np.mean(values), np.std(values), np.max(values), np.min(values)]
                 
                 elif modality == 'med':
-                    samples = recent if recent else [None] * time_steps
-                    for i, sample in enumerate(samples[-time_steps:]):
-                        value = (sample.meditation if sample is not None else self._last_meditation) / 100.0
-                        arr[i, 0] = value
-                        arr[i, 1] = 0.0
-                        arr[i, 2] = value
-                        arr[i, 3] = value
+                    sample_groups = np.array_split(np.asarray(recent, dtype=object), time_steps)
+                    for i, group in enumerate(sample_groups):
+                        values = np.asarray(
+                            [sample.meditation for sample in group] or [self._last_meditation],
+                            dtype=np.float32,
+                        )
+                        arr[i] = [np.mean(values), np.std(values), np.max(values), np.min(values)]
                 
                 # 记录每个模态的统计信息
                 logger.debug(f"[FEATURE] {modality} - shape={arr.shape}, mean={arr.mean():.4f}, "

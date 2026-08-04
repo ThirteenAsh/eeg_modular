@@ -10,8 +10,8 @@ model:
   cvae_latent_dim: 64
   cvae_input_dim: 160
   dropout: 0.5
-  scalers_dir: null
-  skip_scaling: true
+  scalers_dir: "../features"
+  skip_scaling: false
 
 voting:
   window_size: 8
@@ -33,7 +33,8 @@ thinkgear:
   com_port: "COM6"
   baud_rate: 57600
   sample_rate: 512
-  buffer_size: 1024
+  buffer_size: 2048
+  analysis_window_seconds: 30.0
   use_mock: false
   use_training_data: false
   features_dir: "../features"
@@ -41,7 +42,14 @@ thinkgear:
   stale_timeout_seconds: 2.5
 
 inference:
-  inference_interval: 0.1
+  inference_interval: 2.0
+  confidence_threshold: 0.60
+  max_poor_signal: 50
+  results_csv: "logs/inference_results.csv"
+  decision_ewma_alpha: 0.20
+  intervention_negative_probability: 0.60
+  intervention_sustain_seconds: 20
+  intervention_cooldown_seconds: 90
   max_inference_latency_ms: 200
   target_cpu_usage_percent: 30
 

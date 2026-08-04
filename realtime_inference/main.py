@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import logging
 import os
 import sys
@@ -21,6 +22,7 @@ from src.model import EmotionInferenceModel, InferenceConfig
 from src.voting import SlidingWindowVoter, VotingConfig, ProbabilityAggregator
 from src.unity_comm import UnityEmotionSender, UnityConfig
 from src.thinkgear import ThinkGearCollector, ThinkGearConfig
+from src.decision import EWMASustainedNegativeDecision
 
 
 @dataclass
@@ -100,6 +102,7 @@ def load_config(config_path: str) -> SystemConfig:
             tcp_port=thinkgear_cfg.get("tcp_port", 13854),
             sample_rate=thinkgear_cfg.get("sample_rate", 512),
             buffer_size=thinkgear_cfg.get("buffer_size", 1024),
+            analysis_window_seconds=thinkgear_cfg.get("analysis_window_seconds", 30.0),
             use_mock=thinkgear_cfg.get("use_mock", False),
             use_training_data=thinkgear_cfg.get("use_training_data", True),
             features_dir=thinkgear_cfg.get("features_dir", "../features"),
@@ -126,6 +129,9 @@ class EmotionInferenceSystem:
         self._inference_count = 0
         self._total_inference_time = 0.0
         self._last_offline_log_time = 0.0
+        self._decision_policy: Optional[EWMASustainedNegativeDecision] = None
+        self.results_file = None
+        self.results_writer = None
         
         # log.txt 文件处理
         self.log_file_path = Path("log.txt")
@@ -149,6 +155,33 @@ class EmotionInferenceSystem:
         self.prob_agg = ProbabilityAggregator(window_size=self.cfg.voting.window_size)
         self.unity_sender = UnityEmotionSender(self.cfg.unity)
         self.collector = ThinkGearCollector(self.cfg.thinkgear)
+        negative_index = self.model.class_names.index("sad")
+        self._decision_policy = EWMASustainedNegativeDecision(
+            negative_index=negative_index,
+            alpha=float(self.cfg.inference.get("decision_ewma_alpha", 0.20)),
+            negative_threshold=float(
+                self.cfg.inference.get("intervention_negative_probability", 0.60)
+            ),
+            sustain_seconds=float(
+                self.cfg.inference.get("intervention_sustain_seconds", 20)
+            ),
+            cooldown_seconds=float(
+                self.cfg.inference.get("intervention_cooldown_seconds", 90)
+            ),
+        )
+        results_path = Path(self.cfg.inference.get("results_csv", "logs/inference_results.csv"))
+        results_path.parent.mkdir(parents=True, exist_ok=True)
+        self.results_file = results_path.open("a", newline="", encoding="utf-8")
+        fieldnames = [
+            "timestamp", "predicted_class", "prob_positive", "prob_neutral",
+            "prob_negative", "confidence", "attention", "meditation",
+            "poor_signal", "inference_latency_ms", "raw_class",
+            "signal_good", "intervention_triggered",
+        ]
+        self.results_writer = csv.DictWriter(self.results_file, fieldnames=fieldnames)
+        if self.results_file.tell() == 0:
+            self.results_writer.writeheader()
+            self.results_file.flush()
         
         self.logger.info("System initialized successfully")
 
@@ -195,6 +228,9 @@ class EmotionInferenceSystem:
                 self.logger.error(f"Error closing log.txt: {e}")
             finally:
                 self.log_file = None
+        if self.results_file:
+            self.results_file.close()
+            self.results_file = None
         
         self.logger.info("System stopped")
 
@@ -236,7 +272,7 @@ class EmotionInferenceSystem:
             current_time = time.time()
             status = self.collector.get_status()
 
-            if not status["device_connected"]:
+            if not status["device_connected"] or not status["buffer_ready"]:
                 self.unity_sender.send(
                     emotion="offline",
                     confidence=0.0,
@@ -269,7 +305,9 @@ class EmotionInferenceSystem:
                         f"data_age={status['data_age_seconds']:.1f}s, "
                         f"esense_age={status['esense_age_seconds']:.1f}s, "
                         f"raw/esense/power={status['raw_packet_count']}/"
-                        f"{status['esense_packet_count']}/{status['power_packet_count']}"
+                        f"{status['esense_packet_count']}/{status['power_packet_count']}, "
+                        f"buffer={status['buffer_fill_seconds']:.1f}/"
+                        f"{status['analysis_window_seconds']:.1f}s"
                     )
                 return
             
@@ -284,8 +322,11 @@ class EmotionInferenceSystem:
             
             self.logger.debug("[MAIN] Step 3: Applying probability smoothing...")
             smoothed_probs = self.prob_agg.update(probs)
-            self.logger.debug(f"[MAIN] Smoothed probabilities - happy={smoothed_probs[0]:.4f}, "
-                           f"sad={smoothed_probs[1]:.4f}, normal={smoothed_probs[2]:.4f}")
+            prob_dict = {
+                name: float(smoothed_probs[index])
+                for index, name in enumerate(self.model.class_names)
+            }
+            self.logger.debug("[MAIN] Smoothed probabilities - %s", prob_dict)
             
             self.logger.debug("[MAIN] Step 4: Applying voting...")
             final_emotion, transition_progress = self.voter.update(
@@ -295,15 +336,30 @@ class EmotionInferenceSystem:
             )
             
             confidence = float(smoothed_probs.max())
-            prob_dict = {
-                "happy": float(smoothed_probs[0]),
-                "sad": float(smoothed_probs[1]),
-                "normal": float(smoothed_probs[2]),
-            }
+            confidence_threshold = float(self.cfg.inference.get("confidence_threshold", 0.60))
+            max_poor_signal = int(self.cfg.inference.get("max_poor_signal", 50))
+            signal_good = int(status["poor_signal"]) <= max_poor_signal
+            output_class = final_emotion
+            if not signal_good:
+                output_class = "poor_signal"
+            elif confidence < confidence_threshold:
+                output_class = "uncertain"
+
+            decision = self._decision_policy.update(
+                probabilities=np.asarray(probs),
+                timestamp=current_time,
+                eligible=signal_good and confidence >= confidence_threshold,
+            )
+            intervention_triggered = decision.intervention_triggered
+            if intervention_triggered:
+                self.logger.warning(
+                    "[FEEDBACK] EWMA negative probability remained above threshold; "
+                    "learning intervention requested"
+                )
             
             self.logger.debug("[MAIN] Step 5: Sending to Unity...")
             self.unity_sender.send(
-                emotion=final_emotion,
+                emotion=output_class,
                 confidence=confidence,
                 transition_progress=transition_progress,
                 probabilities=prob_dict,
@@ -327,6 +383,24 @@ class EmotionInferenceSystem:
             inference_time = (time.time() - inference_start) * 1000
             self._inference_count += 1
             self._total_inference_time += inference_time
+            self.results_writer.writerow(
+                {
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "predicted_class": output_class,
+                    "prob_positive": f"{prob_dict['happy']:.6f}",
+                    "prob_neutral": f"{prob_dict['normal']:.6f}",
+                    "prob_negative": f"{prob_dict['sad']:.6f}",
+                    "confidence": f"{confidence:.6f}",
+                    "attention": int(status["attention"]),
+                    "meditation": int(status["meditation"]),
+                    "poor_signal": int(status["poor_signal"]),
+                    "inference_latency_ms": f"{inference_time:.3f}",
+                    "raw_class": emotion,
+                    "signal_good": int(signal_good),
+                    "intervention_triggered": int(intervention_triggered),
+                }
+            )
+            self.results_file.flush()
             
             if self._inference_count % 100 == 0:
                 self._log_performance_stats()
@@ -361,9 +435,9 @@ class EmotionInferenceSystem:
                 f"Med={int(status['meditation']):3d} | "
                 f"Poor={int(status['poor_signal']):3d} | "
                 f"Source={status['source']} | "
-                f"Happy={smoothed_probs[0]:.4f} | "
-                f"Sad={smoothed_probs[1]:.4f} | "
-                f"Normal={smoothed_probs[2]:.4f}\n"
+                f"Happy={prob_dict['happy']:.4f} | "
+                f"Sad={prob_dict['sad']:.4f} | "
+                f"Normal={prob_dict['normal']:.4f}\n"
             )
             self._write_to_log(log_line)
             

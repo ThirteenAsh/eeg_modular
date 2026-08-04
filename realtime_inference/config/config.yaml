@@ -10,8 +10,8 @@ model:
   cvae_latent_dim: 64
   cvae_input_dim: 160
   dropout: 0.5
-  scalers_dir: null
-  skip_scaling: true  # 使用训练数据时跳过归一化（训练数据已经归一化）
+  scalers_dir: "../features"
+  skip_scaling: false
 
 voting:
   window_size: 10
@@ -33,14 +33,22 @@ thinkgear:
   tcp_host: "127.0.0.1"
   tcp_port: 13854
   sample_rate: 512
-  buffer_size: 1024
+  buffer_size: 2048
+  analysis_window_seconds: 30.0
   use_mock: true
   use_training_data: true  # 使用训练数据作为mock（确保特征格式一致）
   features_dir: "../features"  # 训练数据目录
   training_data_hold_samples: 30  # 每个训练数据样本保持多少帧（越大变化越慢）
 
 inference:
-  inference_interval: 0.1
+  inference_interval: 2.0
+  confidence_threshold: 0.60
+  max_poor_signal: 50
+  results_csv: "logs/inference_results.csv"
+  decision_ewma_alpha: 0.20
+  intervention_negative_probability: 0.60
+  intervention_sustain_seconds: 20
+  intervention_cooldown_seconds: 90
   max_inference_latency_ms: 200
   target_cpu_usage_percent: 30
 

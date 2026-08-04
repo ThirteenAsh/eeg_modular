@@ -45,8 +45,8 @@ class EmotionInferenceModel:
         self.cfg = cfg
         self.device = self._init_device()
         self.scalers = self._load_scalers()
+        self.class_names = self._load_class_names()
         self.model = self._load_model()
-        self.class_names = ["happy", "sad", "normal"]
 
     def _init_device(self) -> torch.device:
         if self.cfg.device == "auto":
@@ -54,24 +54,52 @@ class EmotionInferenceModel:
         return torch.device(self.cfg.device)
 
     def _load_scalers(self) -> Dict[str, any]:
-        """加载训练时的归一化器"""
+        """Load and validate one training scaler for every configured modality."""
         scalers = {}
         
-        if self.cfg.scalers_dir is None:
-            logger.warning("No scalers directory provided, skipping normalization")
+        if self.cfg.skip_scaling:
+            logger.warning("Scaling explicitly disabled; inputs must already be standardized")
             return scalers
+        if self.cfg.scalers_dir is None:
+            raise ValueError("scalers_dir is required when skip_scaling=false")
         
         scalers_dir = Path(self.cfg.scalers_dir)
+        if not scalers_dir.is_dir():
+            raise FileNotFoundError(f"Scalers directory not found: {scalers_dir.resolve()}")
         
         for mod in self.cfg.modalities:
             scaler_path = scalers_dir / f"scaler_{mod}.joblib"
-            if scaler_path.exists():
-                scalers[mod] = joblib.load(scaler_path)
-                logger.info(f"Loaded scaler for {mod} from {scaler_path}")
-            else:
-                logger.warning(f"Scaler not found for {mod}: {scaler_path}")
+            if not scaler_path.is_file():
+                raise FileNotFoundError(f"Missing scaler for modality '{mod}': {scaler_path.resolve()}")
+            scaler = joblib.load(scaler_path)
+            n_features = getattr(scaler, "n_features_in_", None)
+            if n_features is None:
+                raise TypeError(f"Scaler for '{mod}' has no n_features_in_: {scaler_path}")
+            if int(n_features) != self.cfg.feat_dim:
+                raise ValueError(
+                    f"Scaler '{mod}' expects {n_features} features, model expects {self.cfg.feat_dim}"
+                )
+            scalers[mod] = scaler
+            logger.info("Loaded scaler mapping %s -> %s", mod, scaler_path)
+        if set(scalers) != set(self.cfg.modalities):
+            raise RuntimeError("Scaler validation incomplete; refusing to start")
         
         return scalers
+
+    def _load_class_names(self) -> List[str]:
+        if self.cfg.scalers_dir is None:
+            raise ValueError("scalers_dir is required to load label_encoder.joblib")
+        encoder_path = Path(self.cfg.scalers_dir) / "label_encoder.joblib"
+        if not encoder_path.is_file():
+            raise FileNotFoundError(f"Missing label encoder: {encoder_path.resolve()}")
+        encoder = joblib.load(encoder_path)
+        class_names = [str(name) for name in getattr(encoder, "classes_", [])]
+        if len(class_names) != self.cfg.num_classes:
+            raise ValueError(
+                f"Label encoder has {len(class_names)} classes, model expects {self.cfg.num_classes}"
+            )
+        logger.info("Loaded class order: %s", class_names)
+        return class_names
 
     def _apply_scalers(self, data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """应用归一化器 - 按照原始项目的方式"""
@@ -85,21 +113,24 @@ class EmotionInferenceModel:
             return result
         
         for mod in self.cfg.modalities:
-            arr = data.get(mod, np.zeros((self.cfg.time_steps, self.cfg.feat_dim), dtype=np.float32))
+            if mod not in data:
+                raise KeyError(f"Missing required modality: {mod}")
+            arr = np.asarray(data[mod], dtype=np.float32)
+            if arr.ndim != 2 or arr.shape != (self.cfg.time_steps, self.cfg.feat_dim):
+                raise ValueError(
+                    f"Modality '{mod}' must have shape "
+                    f"({self.cfg.time_steps}, {self.cfg.feat_dim}), got {arr.shape}"
+                )
+            if not np.isfinite(arr).all():
+                raise ValueError(f"Modality '{mod}' contains NaN or Inf before scaling")
             
             logger.debug(f"[SCALER] {mod} - Before scaling: mean={arr.mean():.4f}, std={arr.std():.4f}")
             
-            if mod in self.scalers:
-                scaler = self.scalers[mod]
-                # 归一化期望 (N*T, F) - N=1个样本，T=10，F=4 → (10, 4)
-                original_shape = arr.shape
-                arr_reshaped = arr.reshape(-1, original_shape[1])  # (10, 4)
-                arr_scaled = scaler.transform(arr_reshaped)
-                result[mod] = arr_scaled.reshape(original_shape)
-                logger.debug(f"[SCALER] {mod} - After scaling: mean={result[mod].mean():.4f}, std={result[mod].std():.4f}")
-            else:
-                result[mod] = arr
-                logger.warning(f"[SCALER] {mod} - No scaler found, using raw data")
+            scaler = self.scalers[mod]
+            result[mod] = scaler.transform(arr).astype(np.float32)
+            if result[mod].shape != arr.shape or not np.isfinite(result[mod]).all():
+                raise ValueError(f"Scaler output invalid for modality '{mod}': {result[mod].shape}")
+            logger.debug(f"[SCALER] {mod} - After scaling: mean={result[mod].mean():.4f}, std={result[mod].std():.4f}")
         
         return result
 
@@ -170,10 +201,6 @@ class EmotionInferenceModel:
         
         x_dict = {}
         for mod in self.cfg.modalities:
-            if mod not in data:
-                data[mod] = np.zeros((self.cfg.time_steps, self.cfg.feat_dim), dtype=np.float32)
-                logger.warning(f"[MODEL] Missing modality {mod}, using zero padding")
-            
             arr = data[mod]
             if arr.shape[0] < self.cfg.time_steps:
                 pad = np.zeros((self.cfg.time_steps - arr.shape[0], arr.shape[1]), dtype=np.float32)
@@ -185,14 +212,19 @@ class EmotionInferenceModel:
             
             x_dict[mod] = torch.from_numpy(arr).unsqueeze(0).to(self.device, dtype=torch.float32)
         
-        outputs = self.model(x_dict)
-        logger.debug(f"[MODEL] Raw model outputs: {outputs.cpu().numpy()[0]}")
-        
-        probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
+        if self.cfg.use_cvae:
+            conditional_probs = []
+            for label_idx in range(self.cfg.num_classes):
+                labels = torch.full((1,), label_idx, dtype=torch.long, device=self.device)
+                conditional_probs.append(torch.softmax(self.model(x_dict, labels=labels), dim=1))
+            probs = torch.stack(conditional_probs, dim=0).mean(dim=0).cpu().numpy()[0]
+        else:
+            outputs = self.model(x_dict)
+            probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
         pred_idx = int(np.argmax(probs))
         emotion = self.class_names[pred_idx]
         
-        logger.debug(f"[MODEL] Probabilities - happy={probs[0]:.4f}, sad={probs[1]:.4f}, normal={probs[2]:.4f}")
+        logger.debug("[MODEL] Probabilities - %s", dict(zip(self.class_names, probs.tolist())))
         logger.info(f"[MODEL] Predicted emotion: {emotion} (confidence={probs[pred_idx]:.4f})")
         
         return emotion, probs
