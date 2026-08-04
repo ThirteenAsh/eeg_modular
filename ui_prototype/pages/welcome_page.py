@@ -34,7 +34,7 @@ class WelcomePage(BasePage):
             "智学脑机助手通过 MindWave 单通道脑电设备，持续观察学习过程中的状态变化。\n"
             "系统融合 EEG 时域与频域特征，输出积极、中性、负性三类状态概率，并独立评估信号可信度，\n"
             "为学习节奏调整、专注趋势观察和阶段复盘提供辅助信息。\n\n"
-            "当前为界面预览模式，尚未接入真实设备；预览数据不会作为学习状态结论。"
+            "请先启动 ThinkGear Connector 并正确佩戴设备；只有信号质量合格后，系统才会提供状态解释。"
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color: #C5CDD9; font-size: 14px; line-height: 1.6;")

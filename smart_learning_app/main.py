@@ -14,11 +14,27 @@ def main() -> None:
     # The UI prototype is an accepted presentation layer. Business integration
     # remains in smart_learning_app and must not import the prototype mock service.
     sys.path.insert(0, str(PROTOTYPE))
-    from main import main as launch_ui
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    from main import load_stylesheet
+    from main_window import MainWindow
+    from services.font_loader import ensure_chinese_font
+    from smart_learning_app.live_service import LiveDataService
 
-    launch_ui()
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
+    app = QApplication(sys.argv)
+    app.setApplicationName("智学脑机助手")
+    ensure_chinese_font()
+    load_stylesheet(app)
+    package_dir = ROOT / "production_baseline_v1"
+    window = MainWindow(
+        service_factory=lambda state: LiveDataService(state, package_dir)
+    )
+    window.show()
+    raise SystemExit(app.exec())
 
 
 if __name__ == "__main__":
     main()
-
