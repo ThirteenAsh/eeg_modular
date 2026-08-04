@@ -65,6 +65,9 @@ temp/
 tmp/
 *.tmp
 *.temp
+.dependency_quarantine/
+.ui_review/
+.pytest_cache/
 
 # ThinkGear Connector (NeuroSky device software)
 ThinkGear Connector/
@@ -77,6 +80,26 @@ PROJECT_ANALYSIS_REPORT.md
 realtime_inference/logs/
 realtime_inference/*.log
 realtime_inference/log.txt 
+realtime_inference/captures/
+
+# Local EEG recordings and generated experiment artifacts
+raw_*/
+features_v*/
+outputs_v*/
+splits_v*/
+quality_reference_v*/
+
+# Local application/session exports
+smart_learning_app/data/
+smart_learning_app/reports/
+data/sessions/
+reports/generated/
+
+# Build and packaging artifacts
+build/
+dist/
+*.spec
+installer/output/
 
 # Temporary documents
 8~9.md
