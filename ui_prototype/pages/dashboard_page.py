@@ -159,7 +159,7 @@ class DashboardPage(BasePage):
         sustain_layout = QVBoxLayout()
         sustain_layout.setSpacing(6)
 
-        self._sustain_label = QLabel("主导状态：--")
+        self._sustain_label = QLabel("最近90秒主导状态（有效预测众数）：--")
         self._sustain_label.setObjectName("CardValueSmall")
         self._sustain_label.setStyleSheet("font-size: 16px; font-weight: bold;")
         sustain_layout.addWidget(self._sustain_label)
@@ -294,7 +294,7 @@ class DashboardPage(BasePage):
             self.state.add_event(text, "user")
 
     def _on_end(self):
-        self.service.end_session()
+        saved_path = self.service.end_session()
         self._session_started = False
         self._btn_start.setEnabled(True)
         self._btn_pause.setEnabled(False)
@@ -305,7 +305,9 @@ class DashboardPage(BasePage):
         self.state.add_event("会话结束", "system")
         QMessageBox.information(
             self, "会话结束",
-            f"会话已结束，时长 {self.state.session_seconds:.0f} 秒。可导出报告。"
+            f"会话已结束，时长 {self.state.session_seconds:.0f} 秒。\n"
+            + (f"综合CSV已保存至：\n{saved_path}\n" if saved_path else "未生成综合CSV，请查看诊断信息。\n")
+            + "可在“CSV回放”中直接加载该文件。"
         )
 
     def _on_export(self):
@@ -468,7 +470,7 @@ class DashboardPage(BasePage):
         # ── 持续状态：使用 stable_state ──
         if s.inference_eligible:
             display = CLASS_DISPLAY.get(s.stable_state, "--")
-            self._sustain_label.setText(f"主导状态：{display}")
+            self._sustain_label.setText(f"最近90秒主导状态（有效预测众数）：{display}")
             color_map = {
                 "positive": "#4ADE80",
                 "neutral": "#4FC3F7",
@@ -479,7 +481,7 @@ class DashboardPage(BasePage):
                 f"font-size: 16px; font-weight: bold; color: {color_map.get(s.stable_state, '#6B7689')};"
             )
         else:
-            self._sustain_label.setText("主导状态：--")
+            self._sustain_label.setText("最近90秒主导状态（有效预测众数）：--")
             self._sustain_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #6B7689;")
 
         # 消极持续：使用内部簿记 _negative_sustain_seconds

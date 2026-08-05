@@ -11,6 +11,8 @@ import csv
 import io
 import math
 import random
+from collections import Counter
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer
@@ -106,7 +108,7 @@ class ReplayPage(BasePage):
         control_layout = QHBoxLayout()
         control_layout.setSpacing(10)
 
-        self._btn_load = QPushButton("加载CSV文件")
+        self._btn_load = QPushButton("加载一个或多个CSV")
         self._btn_load.clicked.connect(self._load_file)
         control_layout.addWidget(self._btn_load)
 
@@ -196,6 +198,10 @@ class ReplayPage(BasePage):
         self._replay_pred.setStyleSheet("font-size: 14px;")
         prob_card.add_widget(self._replay_pred)
 
+        self._replay_dominant = QLabel("整场主导状态（有效预测众数）：--")
+        self._replay_dominant.setStyleSheet("font-size: 13px; color: #AAB6C8;")
+        prob_card.add_widget(self._replay_dominant)
+
         bottom_layout.addWidget(prob_card, 1)
 
         # 仪表
@@ -249,21 +255,49 @@ class ReplayPage(BasePage):
         return w
 
     def _load_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择CSV文件", "", "CSV Files (*.csv);;All Files (*)"
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "选择一个或多个会话CSV", "", "CSV Files (*.csv);;All Files (*)"
         )
-        if not path:
+        if not paths:
             return
         try:
-            with open(path, "r", encoding="utf-8-sig") as f:
-                reader = csv.DictReader(f)
-                self._data = list(reader)
+            combined = []
+            missing_predictions = False
+            for path in paths:
+                with open(path, "r", encoding="utf-8-sig") as f:
+                    rows = list(csv.DictReader(f))
+                if not rows or not any("raw" in row or "raw_eeg" in row for row in rows):
+                    raise ValueError(f"{Path(path).name} 不包含 Raw EEG 列")
+                normalized = [self._normalize_row(row, Path(path).name) for row in rows]
+                missing_predictions |= not any(row["predicted_class"] for row in normalized)
+                combined.extend(normalized)
+            self._data = combined
             self._is_sample = False
             self._demo_label.setVisible(False)
-            self._label_file.setText(f"已加载: {path.split('/')[-1]} ({len(self._data)}行)")
+            self._label_file.setText(f"已加载 {len(paths)} 个文件，共 {len(self._data)} 行")
             self._init_playback()
+            if missing_predictions:
+                QMessageBox.information(
+                    self, "原始数据回放",
+                    "部分文件没有模型概率，因此只能回放 Raw/ATT/MED，不能补造状态结果。\n"
+                    "应用新保存的 session.csv 是包含采集、质量与推理结果的综合CSV。"
+                )
         except Exception as e:
             QMessageBox.warning(self, "加载失败", f"无法加载文件：{e}")
+
+    @staticmethod
+    def _normalize_row(row: dict, source: str = "") -> dict:
+        pred = (row.get("predicted_class") or row.get("prediction") or "").strip()
+        pred = {"happy": "positive", "normal": "neutral", "sad": "negative"}.get(pred, pred)
+        return {
+            **row,
+            "source_file": source,
+            "timestamp": row.get("signal_time_seconds") or row.get("timestamp") or row.get("timestamp_unix") or "",
+            "raw": row.get("raw") if row.get("raw") not in (None, "") else row.get("raw_eeg", ""),
+            "attention": row.get("attention") if row.get("attention") not in (None, "") else row.get("att", ""),
+            "meditation": row.get("meditation") if row.get("meditation") not in (None, "") else row.get("med", ""),
+            "predicted_class": pred,
+        }
 
     def _load_sample(self):
         """加载内置示例数据（演示数据）。"""
@@ -286,6 +320,32 @@ class ReplayPage(BasePage):
         self._trend_plot.reset()
         self._update_frame(0)
         self._populate_table()
+        self._update_dominant_state()
+
+    def _update_dominant_state(self):
+        votes = []
+        seen_inferences = set()
+        for row in self._data:
+            pred = row.get("predicted_class", "")
+            if pred not in ("positive", "neutral", "negative"):
+                continue
+            inference_id = row.get("inference_index", "")
+            if inference_id:
+                key = (row.get("source_file", ""), inference_id)
+                if key in seen_inferences:
+                    continue
+                seen_inferences.add(key)
+            votes.append(pred)
+        if not votes:
+            self._replay_dominant.setText("整场主导状态（有效预测众数）：--（无模型预测）")
+            return
+        counts = Counter(votes)
+        highest = max(counts.values())
+        tied = {name for name, count in counts.items() if count == highest}
+        dominant = next(name for name in reversed(votes) if name in tied)
+        self._replay_dominant.setText(
+            f"整场主导状态（有效预测众数）：{CLASS_DISPLAY.get(dominant, dominant)} · {highest}/{len(votes)}"
+        )
 
     def _populate_table(self):
         self._table.setRowCount(min(50, len(self._data)))
@@ -369,7 +429,7 @@ class ReplayPage(BasePage):
         pp = self._safe_float(row, "prob_positive")
         pn = self._safe_float(row, "prob_neutral")
         ng = self._safe_float(row, "prob_negative")
-        pred = row.get("predicted_class", "neutral") or "neutral"
+        pred = row.get("predicted_class", "") or ""
 
         self._eeg_plot.push_value(raw)
         self._trend_plot.push_values(att, med)
@@ -390,7 +450,7 @@ class ReplayPage(BasePage):
         )
         self._prob_panel._warning_label.setVisible(False)
 
-        display = CLASS_DISPLAY.get(pred, pred)
+        display = CLASS_DISPLAY.get(pred, pred) if pred else "--"
         self._replay_pred.setText(f"预测状态：{display}")
 
         self._label_progress.setText(

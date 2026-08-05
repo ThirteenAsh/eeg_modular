@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import queue
 import socket
+import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +21,52 @@ from smart_learning_app.inference_engine import ProductionInferenceEngine
 SAMPLE_RATE = 512
 WINDOW_SAMPLES = 30 * SAMPLE_RATE
 INFERENCE_STEP_SAMPLES = 2 * SAMPLE_RATE
+
+
+class SessionCsvWriter:
+    """Write a replay-ready session CSV without blocking the Qt UI thread."""
+
+    FIELDS = (
+        "timestamp_unix", "signal_time_seconds", "raw_sample_index", "raw",
+        "attention", "meditation", "poor_signal", "prob_positive",
+        "prob_neutral", "prob_negative", "predicted_class", "confidence",
+        "quality_level", "inference_index",
+    )
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.error: str | None = None
+        self._queue: queue.Queue = queue.Queue()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def append(self, rows: list[dict]) -> None:
+        if rows:
+            self._queue.put(rows)
+
+    def close(self, timeout: float = 10.0) -> bool:
+        self._queue.put(None)
+        self._thread.join(timeout)
+        if self._thread.is_alive():
+            self.error = "会话CSV保存超时"
+        return self.error is None
+
+    def _run(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("w", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.DictWriter(handle, fieldnames=self.FIELDS)
+                writer.writeheader()
+                while True:
+                    rows = self._queue.get()
+                    if rows is None:
+                        break
+                    writer.writerows(rows)
+                handle.flush()
+        except Exception as exc:
+            self.error = str(exc)
 
 
 class ThinkGearLiveWorker(QThread):
@@ -245,6 +293,12 @@ class LiveDataService(QObject):
         self._last_tick = time.monotonic()
         self._session_running = False
         self._ewma: np.ndarray | None = None
+        self.sessions_dir = Path(package_dir).parent / "data" / "sessions"
+        self._session_writer: SessionCsvWriter | None = None
+        self._session_csv_path: Path | None = None
+        self._session_raw_origin = 0
+        self._accepted_states = deque(maxlen=45)  # 90 s at a 2 s inference step
+        self._inference_index = 0
 
     def start_streaming(self) -> None:
         if not self.inference.isRunning():
@@ -255,12 +309,23 @@ class LiveDataService(QObject):
 
     def stop_streaming(self) -> None:
         self._timer.stop()
+        if self._session_writer is not None:
+            self.end_session()
         self.acquisition.stop()
         self.inference.stop()
 
-    def start_session(self) -> None:
+    def start_session(self) -> str:
+        if self._session_writer is not None:
+            self._session_writer.close()
+        self._session_csv_path = self.sessions_dir / self.state.run_id / "session.csv"
+        self._session_writer = SessionCsvWriter(self._session_csv_path)
+        self._session_writer.start()
+        self._session_raw_origin = int(self.state._raw_sample_count)
+        self._accepted_states.clear()
+        self._inference_index = 0
         self.state._session_active = True
         self._session_running = True
+        return str(self._session_csv_path)
 
     def pause_session(self) -> None:
         self.state._session_active = False
@@ -270,9 +335,16 @@ class LiveDataService(QObject):
         self.state._session_active = True
         self._session_running = True
 
-    def end_session(self) -> None:
+    def end_session(self) -> str | None:
         self.state._session_active = False
         self._session_running = False
+        writer, self._session_writer = self._session_writer, None
+        if writer is None:
+            return None
+        if not writer.close():
+            self._on_error(f"会话CSV保存失败：{writer.error}")
+            return None
+        return str(writer.path)
 
     def _on_status(self, status: dict) -> None:
         self.state.mode = "live"
@@ -286,6 +358,9 @@ class LiveDataService(QObject):
             self.state._eeg_raw_buffer.clear()
             self.state.quality_level = "rejected"
             self.state.quality_reasons = [status.get("reason", "等待设备数据")]
+            self._accepted_states.clear()
+            self._ewma = None
+            self.state.stable_state = None
         self.state.emit_update()
 
     def _on_batch(self, batch: dict) -> None:
@@ -303,7 +378,39 @@ class LiveDataService(QObject):
         s._raw_sample_count = int(batch["raw_count"])
         s.warmup_progress = min(1.0, batch["buffer_samples"] / WINDOW_SAMPLES)
         self._update_quality()
+        self._record_batch(batch)
         s.emit_update()
+
+    def _record_batch(self, batch: dict) -> None:
+        if not self._session_running or self._session_writer is None or not batch["raw"]:
+            return
+        raw_values = batch["raw"]
+        global_start = int(batch["raw_count"]) - len(raw_values)
+        received_at = time.time()
+        s = self.state
+        rows = []
+        for offset, value in enumerate(raw_values):
+            global_index = global_start + offset
+            sample_index = global_index - self._session_raw_origin
+            if sample_index < 0:
+                continue
+            rows.append({
+                "timestamp_unix": f"{received_at - (len(raw_values) - 1 - offset) / SAMPLE_RATE:.6f}",
+                "signal_time_seconds": f"{sample_index / SAMPLE_RATE:.6f}",
+                "raw_sample_index": sample_index,
+                "raw": value,
+                "attention": "" if s.attention is None else s.attention,
+                "meditation": "" if s.meditation is None else s.meditation,
+                "poor_signal": "" if s.poor_signal is None else s.poor_signal,
+                "prob_positive": "" if s.prob_positive is None else s.prob_positive,
+                "prob_neutral": "" if s.prob_neutral is None else s.prob_neutral,
+                "prob_negative": "" if s.prob_negative is None else s.prob_negative,
+                "predicted_class": s.predicted_state or "",
+                "confidence": "" if s.confidence is None else s.confidence,
+                "quality_level": s.quality_level,
+                "inference_index": self._inference_index,
+            })
+        self._session_writer.append(rows)
 
     def _update_quality(self) -> None:
         s = self.state
@@ -330,11 +437,19 @@ class LiveDataService(QObject):
         s.confidence = result.confidence
         s._prob_history.append((time.time(), *probs.tolist()))
         self._ewma = probs if self._ewma is None else 0.2 * probs + 0.8 * self._ewma
+        self._inference_index += 1
         if result.accepted:
-            s.stable_state = ("positive", "neutral", "negative")[int(np.argmax(self._ewma))]
+            self._accepted_states.append(result.display_class)
+            counts = Counter(self._accepted_states)
+            highest = max(counts.values())
+            tied = {name for name, count in counts.items() if count == highest}
+            s.stable_state = next(
+                name for name in reversed(self._accepted_states) if name in tied
+            )
             s.feedback_text = self._feedback(s.stable_state)
         else:
-            s.stable_state = None
+            # Rejected predictions are not votes and do not erase prior valid evidence.
+            s.stable_state = s.stable_state if self._accepted_states else None
             s.feedback_text = "当前状态置信度不足，继续观察后再提供学习建议。"
         s.emit_update()
 

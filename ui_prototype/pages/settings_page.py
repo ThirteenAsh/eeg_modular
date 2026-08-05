@@ -1,315 +1,155 @@
-"""页面6：设置和系统诊断页。
-
-诊断区域只消费 DashboardState 的正式字段：
-  connector_status, device_status, mode, sample_rate_hz,
-  quality_level, quality_reasons, warmup_progress, inference_eligible。
-
-已移除的诊断项（对应字段已从 DashboardState 删除）：
-  raw_packet_count, esense_packet_count, power_packet_count, buffer_fill_seconds。
-"""
+"""Formal runtime contract and system diagnostics page."""
 
 from __future__ import annotations
 
-import platform
 import os
+import platform
+from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
-    QPushButton, QComboBox, QSpinBox, QDoubleSpinBox,
-    QLineEdit, QMessageBox,
-)
+from PySide6.QtWidgets import QGridLayout, QLabel, QHBoxLayout, QVBoxLayout, QWidget
 
 from pages.base_page import BasePage
+from services.dashboard_state import DEVICE_TARGET_SAMPLE_HZ, INFERENCE_INTERVAL, WARMUP_SECONDS
 from widgets.card import Card
-from services.dashboard_state import (
-    WARMUP_SECONDS,
-    MAX_POOR_SIGNAL,
-    INFERENCE_INTERVAL,
-    MOCK_UI_REFRESH_HZ,
-    DEVICE_TARGET_SAMPLE_HZ,
-)
 
 
 class SettingsPage(BasePage):
     def __init__(self, state, service):
         self.state = state
         self.service = service
-        self._diag_timer = None
+        self._diag_labels = {}
         super().__init__(
             "设置与系统诊断",
-            "配置连接参数、查看系统状态与模型信息。"
+            "查看已冻结的生产配置、设备连接状态与本地数据位置。",
         )
         self._build_ui()
 
-    def _build_ui(self):
-        main_layout = QHBoxLayout()
-        main_layout.setSpacing(14)
+    @staticmethod
+    def _wrap(layout) -> QWidget:
+        widget = QWidget()
+        widget.setLayout(layout)
+        return widget
 
-        # ── 左侧：设置 ──
+    @staticmethod
+    def _add_rows(layout: QGridLayout, rows):
+        for index, (name, value) in enumerate(rows):
+            key = QLabel(name + "：")
+            key.setStyleSheet("color: #8FA0B8; font-size: 13px;")
+            val = QLabel(str(value))
+            val.setWordWrap(True)
+            val.setTextInteractionFlags(val.textInteractionFlags())
+            val.setStyleSheet("color: #E8EDF3; font-size: 13px;")
+            layout.addWidget(key, index, 0)
+            layout.addWidget(val, index, 1)
+
+    def _build_ui(self):
+        columns = QHBoxLayout()
+        columns.setSpacing(14)
+
         left = QVBoxLayout()
         left.setSpacing(12)
 
-        # 连接设置
-        conn_card = Card("连接设置")
-        conn_layout = QGridLayout()
-        conn_layout.setSpacing(8)
+        connection = Card("设备与数据连接（只读）")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(10)
+        session_dir = getattr(self.service, "sessions_dir", Path("data/sessions"))
+        self._add_rows(grid, [
+            ("连接方式", "ThinkGear Connector TCP（实时）"),
+            ("服务地址", "127.0.0.1:13854"),
+            ("目标采样率", f"{DEVICE_TARGET_SAMPLE_HZ} Hz"),
+            ("会话CSV目录", str(Path(session_dir).resolve())),
+            ("隐私策略", "原始EEG仅在本机处理和保存"),
+        ])
+        connection.add_widget(self._wrap(grid))
+        left.addWidget(connection)
 
-        conn_layout.addWidget(QLabel("连接模式:"), 0, 0)
-        self._combo_mode = QComboBox()
-        self._combo_mode.addItems(["mock", "tcp", "serial"])
-        self._combo_mode.setCurrentText("mock")
-        self._combo_mode.currentTextChanged.connect(self._on_mode_changed)
-        conn_layout.addWidget(self._combo_mode, 0, 1)
-
-        conn_layout.addWidget(QLabel("TCP地址:"), 1, 0)
-        self._input_host = QLineEdit("127.0.0.1")
-        conn_layout.addWidget(self._input_host, 1, 1)
-
-        conn_layout.addWidget(QLabel("TCP端口:"), 2, 0)
-        self._spin_port = QSpinBox()
-        self._spin_port.setRange(1, 65535)
-        self._spin_port.setValue(13854)
-        conn_layout.addWidget(self._spin_port, 2, 1)
-
-        conn_layout.addWidget(QLabel("串口:"), 3, 0)
-        self._input_com = QLineEdit("COM6")
-        conn_layout.addWidget(self._input_com, 3, 1)
-
-        conn_layout.addWidget(QLabel("波特率:"), 4, 0)
-        self._spin_baud = QSpinBox()
-        self._spin_baud.setRange(9600, 115200)
-        self._spin_baud.setValue(57600)
-        conn_layout.addWidget(self._spin_baud, 4, 1)
-
-        # 采样率信息（只读展示，Mock 模式下 sample_rate_hz 为 None）
-        conn_layout.addWidget(QLabel("设备目标采样率:"), 5, 0)
-        target_rate_label = QLabel(f"{DEVICE_TARGET_SAMPLE_HZ} Hz")
-        target_rate_label.setStyleSheet("color: #E8EDF3; font-size: 13px;")
-        conn_layout.addWidget(target_rate_label, 5, 1)
-
-        conn_layout.addWidget(QLabel("Mock刷新率:"), 6, 0)
-        mock_rate_label = QLabel(f"{MOCK_UI_REFRESH_HZ} Hz")
-        mock_rate_label.setStyleSheet("color: #6B7689; font-size: 13px;")
-        conn_layout.addWidget(mock_rate_label, 6, 1)
-
-        # TCP/串口未接入提示（始终可见）
-        self._mode_note = QLabel("TCP和串口模式尚未接入，等待Codex集成")
-        self._mode_note.setStyleSheet(
-            "color: #FBBF24; font-size: 12px; padding: 6px 0;"
-        )
-        self._mode_note.setWordWrap(True)
-        conn_layout.addWidget(self._mode_note, 7, 0, 1, 2)
-
-        conn_card.add_widget(self._wrap(conn_layout))
-        left.addWidget(conn_card)
-
-        # 推理设置
-        infer_card = Card("推理设置")
-        infer_layout = QGridLayout()
-        infer_layout.setSpacing(8)
-
-        infer_layout.addWidget(QLabel("推理间隔(秒):"), 0, 0)
-        self._spin_interval = QDoubleSpinBox()
-        self._spin_interval.setRange(0.5, 10.0)
-        self._spin_interval.setSingleStep(0.5)
-        self._spin_interval.setValue(INFERENCE_INTERVAL)
-        infer_layout.addWidget(self._spin_interval, 0, 1)
-
-        infer_layout.addWidget(QLabel("信号阈值:"), 1, 0)
-        self._spin_poor = QSpinBox()
-        self._spin_poor.setRange(0, 200)
-        self._spin_poor.setValue(MAX_POOR_SIGNAL)
-        infer_layout.addWidget(self._spin_poor, 1, 1)
-
-        infer_layout.addWidget(QLabel("预热时间(秒):"), 2, 0)
-        self._spin_warmup = QSpinBox()
-        self._spin_warmup.setRange(10, 120)
-        self._spin_warmup.setValue(int(WARMUP_SECONDS))
-        infer_layout.addWidget(self._spin_warmup, 2, 1)
-
-        infer_layout.addWidget(QLabel("消极阈值:"), 3, 0)
-        self._spin_neg = QDoubleSpinBox()
-        self._spin_neg.setRange(0.3, 0.9)
-        self._spin_neg.setSingleStep(0.05)
-        self._spin_neg.setValue(0.60)
-        infer_layout.addWidget(self._spin_neg, 3, 1)
-
-        infer_layout.addWidget(QLabel("持续触发(秒):"), 4, 0)
-        self._spin_sustain = QSpinBox()
-        self._spin_sustain.setRange(5, 60)
-        self._spin_sustain.setValue(20)
-        infer_layout.addWidget(self._spin_sustain, 4, 1)
-
-        infer_card.add_widget(self._wrap(infer_layout))
-        left.addWidget(infer_card)
-
-        # 应用按钮
-        btn_apply = QPushButton("应用设置")
-        btn_apply.setObjectName("PrimaryButton")
-        btn_apply.clicked.connect(self._apply_settings)
-        left.addWidget(btn_apply)
-
+        contract = Card("冻结分析契约（只读）")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(10)
+        self._add_rows(grid, [
+            ("观察窗口", f"{int(WARMUP_SECONDS)} 秒 / 15,360 Raw样点"),
+            ("结果更新", f"每 {INFERENCE_INTERVAL:.0f} 秒"),
+            ("时域特征", "filtered · 10×4"),
+            ("频域特征", "bandpower · 10×4"),
+            ("辅助指标", "ATT / MED（不进入情绪分类张量）"),
+            ("主导状态", "最近90秒有效预测的众数；拒识窗口不计票"),
+        ])
+        contract.add_widget(self._wrap(grid))
+        left.addWidget(contract)
         left.addStretch()
-        main_layout.addLayout(left, 0)
+        columns.addLayout(left, 1)
 
-        # ── 右侧：系统诊断 ──
         right = QVBoxLayout()
         right.setSpacing(12)
 
-        # 系统信息
-        sys_card = Card("系统信息")
-        sys_layout = QGridLayout()
-        sys_layout.setSpacing(8)
+        model = Card("生产模型")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(9)
+        self._add_rows(grid, [
+            ("版本", "Production Baseline v1"),
+            ("结构", "filtered + bandpower 双分支CNN（无CVAE）"),
+            ("类别映射", "happy / normal / sad → positive / neutral / negative"),
+            ("Dropout", "0.3"),
+            ("全覆盖评估", "Accuracy 63.88% · Macro-F1 62.69%（受试者隔离）"),
+            ("选择性识别", "90.20%（仅高置信度接受窗口；覆盖率18.41%）"),
+        ])
+        model.add_widget(self._wrap(grid))
+        right.addWidget(model)
 
-        sys_info = [
+        system = Card("运行环境")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(9)
+        self._add_rows(grid, [
             ("操作系统", f"{platform.system()} {platform.release()}"),
-            ("Python版本", platform.python_version()),
+            ("Python", platform.python_version()),
             ("CPU架构", platform.machine()),
-            ("CPU核心数", str(os.cpu_count() or "N/A")),
+            ("CPU核心数", os.cpu_count() or "N/A"),
+        ])
+        system.add_widget(self._wrap(grid))
+        right.addWidget(system)
+
+        diagnostics = Card("实时诊断")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(9)
+        items = [
+            ("connector", "ThinkGear Connector"), ("device", "MindWave设备"),
+            ("source", "数据模式"), ("sample_rate", "采样率"),
+            ("quality", "质量等级"), ("reason", "质量说明"),
+            ("warmup", "预热进度"), ("inference", "推理状态"),
         ]
-        for i, (k, v) in enumerate(sys_info):
-            lbl = QLabel(k + ":")
-            lbl.setStyleSheet("color: #6B7689; font-size: 13px;")
-            sys_layout.addWidget(lbl, i, 0)
-            val = QLabel(v)
-            val.setStyleSheet("color: #E8EDF3; font-size: 13px;")
-            sys_layout.addWidget(val, i, 1)
-
-        sys_card.add_widget(self._wrap(sys_layout))
-        right.addWidget(sys_card)
-
-        # 模型信息
-        model_card = Card("模型信息")
-        model_layout = QGridLayout()
-        model_layout.setSpacing(8)
-
-        model_info = [
-            ("模型类型", "MultiModal CVAE-CNN"),
-            ("类别数", "3 (positive / neutral / negative)"),
-            ("模态", "filtered, powerspec, att, med"),
-            ("时间步", "10"),
-            ("特征维度", "4"),
-            ("CVAE隐空间", "64"),
-            ("Dropout", "0.5"),
-            ("推理延迟", "~8ms (GPU) / ~15ms (CPU)"),
-            ("全覆盖准确率", "63.88% (Production Baseline v1, 严格受试者隔离)"),
-            ("高置信度窗口", "90.20% (覆盖率18.41%)"),
-        ]
-        for i, (k, v) in enumerate(model_info):
-            lbl = QLabel(k + ":")
-            lbl.setStyleSheet("color: #6B7689; font-size: 13px;")
-            model_layout.addWidget(lbl, i, 0)
-            val = QLabel(v)
-            val.setStyleSheet("color: #E8EDF3; font-size: 13px;")
-            model_layout.addWidget(val, i, 1)
-
-        model_card.add_widget(self._wrap(model_layout))
-        right.addWidget(model_card)
-
-        # 实时诊断
-        diag_card = Card("实时诊断")
-        diag_layout = QGridLayout()
-        diag_layout.setSpacing(8)
-
-        self._diag_labels = {}
-        diag_items = [
-            ("connector", "ThinkGear Connector"),
-            ("device", "MindWave设备"),
-            ("source", "数据源"),
-            ("sample_rate", "采样率"),
-            ("quality_level", "质量等级"),
-            ("quality_reasons", "质量原因"),
-            ("warmup_progress", "预热进度"),
-            ("warmup_complete", "预热完成"),
-            ("inference", "推理资格"),
-        ]
-        for i, (key, label) in enumerate(diag_items):
-            row, col = i // 2, i % 2
-            lbl = QLabel(label + ":")
-            lbl.setStyleSheet("color: #6B7689; font-size: 13px;")
-            diag_layout.addWidget(lbl, row, col * 2)
-            val = QLabel("--")
-            val.setStyleSheet("color: #E8EDF3; font-size: 13px;")
-            diag_layout.addWidget(val, row, col * 2 + 1)
-            self._diag_labels[key] = val
-
-        diag_card.add_widget(self._wrap(diag_layout))
-        right.addWidget(diag_card)
-
+        for index, (key, name) in enumerate(items):
+            row, pair = divmod(index, 2)
+            label = QLabel(name + "：")
+            label.setStyleSheet("color: #8FA0B8; font-size: 13px;")
+            value = QLabel("--")
+            value.setWordWrap(True)
+            value.setStyleSheet("color: #E8EDF3; font-size: 13px;")
+            grid.addWidget(label, row, pair * 2)
+            grid.addWidget(value, row, pair * 2 + 1)
+            self._diag_labels[key] = value
+        diagnostics.add_widget(self._wrap(grid))
+        right.addWidget(diagnostics)
         right.addStretch()
-        main_layout.addLayout(right, 1)
+        columns.addLayout(right, 2)
 
-        self.content_layout.addLayout(main_layout)
-
-    def _wrap(self, layout) -> QWidget:
-        w = QWidget()
-        w.setLayout(layout)
-        return w
-
-    def _on_mode_changed(self, mode: str):
-        """连接模式切换时更新提示文案。"""
-        if mode == "tcp":
-            self._mode_note.setText("TCP模式尚未接入，等待Codex集成")
-        elif mode == "serial":
-            self._mode_note.setText("串口模式尚未接入，等待Codex集成")
-        else:
-            self._mode_note.setText("TCP和串口模式尚未接入，等待Codex集成")
-
-    def _apply_settings(self):
-        QMessageBox.information(
-            self, "设置已应用",
-            "设置已保存并应用。（Mock模式下部分设置为展示用途，"
-            "sample_rate_hz 由真实设备上报，UI不直接设置）"
-        )
+        self.content_layout.addLayout(columns)
 
     def update_state(self, state):
-        """根据 DashboardState 正式字段刷新诊断面板。"""
-        s = state
-        mode = self._combo_mode.currentText()
-
-        # connector: TCP/串口尚未接入时显示"尚未接入"
-        if mode in ("tcp", "serial"):
-            self._diag_labels["connector"].setText("尚未接入")
-        else:
-            connector_map = {"offline": "离线", "connecting": "连接中", "online": "在线"}
-            self._diag_labels["connector"].setText(
-                connector_map.get(s.connector_status, s.connector_status)
-            )
-
-        # device_status: offline | waiting_raw | online
-        device_map = {"offline": "离线", "waiting_raw": "等待原始数据", "online": "在线"}
-        self._diag_labels["device"].setText(
-            device_map.get(s.device_status, s.device_status)
+        connector = {"offline": "离线", "connecting": "连接中", "online": "在线"}
+        device = {"offline": "离线", "waiting_raw": "等待首个Raw", "online": "在线"}
+        quality = {"trusted": "可信", "warning": "警告", "rejected": "不合格"}
+        self._diag_labels["connector"].setText(connector.get(state.connector_status, state.connector_status))
+        self._diag_labels["device"].setText(device.get(state.device_status, state.device_status))
+        self._diag_labels["source"].setText("实时" if state.mode == "live" else "回放")
+        self._diag_labels["sample_rate"].setText(
+            "尚无Raw数据" if state.sample_rate_hz is None else f"{state.sample_rate_hz:.0f} Hz"
         )
-
-        # mode: live | replay
-        mode_map = {"live": "实时", "replay": "回放"}
-        self._diag_labels["source"].setText(mode_map.get(s.mode, s.mode))
-
-        # sample_rate_hz: None in mock
-        if s.sample_rate_hz is None:
-            self._diag_labels["sample_rate"].setText("N/A (Mock)")
-        else:
-            self._diag_labels["sample_rate"].setText(f"{s.sample_rate_hz:.0f} Hz")
-
-        # quality_level: trusted | warning | rejected
-        ql_map = {"trusted": "可信", "warning": "警告", "rejected": "不合格"}
-        self._diag_labels["quality_level"].setText(
-            ql_map.get(s.quality_level, s.quality_level)
-        )
-
-        # quality_reasons
-        if s.quality_reasons:
-            self._diag_labels["quality_reasons"].setText("; ".join(s.quality_reasons))
-        else:
-            self._diag_labels["quality_reasons"].setText("--")
-
-        # warmup_progress: 0.0 ~ 1.0
-        self._diag_labels["warmup_progress"].setText(f"{s.warmup_progress*100:.0f}%")
-
-        # warmup_complete (property)
-        self._diag_labels["warmup_complete"].setText("是" if s.warmup_complete else "否")
-
-        # inference_eligible (property)
-        self._diag_labels["inference"].setText("就绪" if s.inference_eligible else "未就绪")
+        self._diag_labels["quality"].setText(quality.get(state.quality_level, state.quality_level))
+        self._diag_labels["reason"].setText("；".join(state.quality_reasons) or "--")
+        self._diag_labels["warmup"].setText(f"{state.warmup_progress * 100:.0f}%")
+        self._diag_labels["inference"].setText("就绪" if state.inference_eligible else "未就绪")

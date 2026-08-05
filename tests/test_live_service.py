@@ -1,6 +1,9 @@
+import csv
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -11,10 +14,12 @@ sys.path.insert(0, str(ROOT))
 
 from smart_learning_app.live_service import (
     INFERENCE_STEP_SAMPLES,
+    LiveDataService,
     WINDOW_SAMPLES,
     ProductionInferenceWorker,
     ThinkGearLiveWorker,
 )
+from services.dashboard_state import DashboardState
 
 
 class LiveServiceTest(unittest.TestCase):
@@ -45,6 +50,53 @@ class LiveServiceTest(unittest.TestCase):
         worker._reset_stream()
         self.assertEqual(len(worker._raw), 0)
         self.assertIsNone(worker._first_raw_monotonic)
+
+    def test_session_csv_contains_capture_quality_and_prediction(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = DashboardState()
+            state.device_status = "online"
+            state.poor_signal = 0
+            state.warmup_progress = 1.0
+            state.prob_positive = 0.7
+            state.prob_neutral = 0.2
+            state.prob_negative = 0.1
+            state.predicted_state = "positive"
+            state.confidence = 0.7
+            service = LiveDataService(state, ROOT / "production_baseline_v1")
+            service.sessions_dir = Path(temp_dir)
+            service.start_session()
+            service._on_batch({
+                "raw": [10, 11], "attention": 60, "meditation": 50,
+                "poor_signal": 0, "raw_count": 2, "buffer_samples": 2,
+                "sample_rate_hz": 512,
+            })
+            saved = service.end_session()
+            self.assertIsNotNone(saved)
+            with Path(saved).open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["raw"], "10")
+            self.assertEqual(rows[0]["predicted_class"], "positive")
+            self.assertIn("quality_level", rows[0])
+
+    def test_dominant_state_is_mode_of_accepted_predictions(self):
+        state = DashboardState()
+        service = LiveDataService(state, ROOT / "production_baseline_v1")
+        def result(label, accepted=True):
+            probs = {
+                "positive": [0.7, 0.2, 0.1],
+                "neutral": [0.2, 0.7, 0.1],
+                "negative": [0.1, 0.2, 0.7],
+            }[label]
+            return SimpleNamespace(
+                probabilities=probs, display_class=label,
+                confidence=max(probs), accepted=accepted,
+            )
+        for label in ("positive", "neutral", "positive"):
+            service._on_result(result(label))
+        self.assertEqual(state.stable_state, "positive")
+        service._on_result(result("negative", accepted=False))
+        self.assertEqual(state.stable_state, "positive")
 
 
 if __name__ == "__main__":
