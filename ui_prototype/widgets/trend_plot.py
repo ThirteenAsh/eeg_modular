@@ -97,6 +97,25 @@ class ProbabilityTrendWidget(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+
+        legend = QHBoxLayout()
+        legend.setContentsMargins(0, 0, 0, 0)
+        legend.setSpacing(14)
+        legend.addStretch()
+        for label, color in (
+            ("积极", "#5B8DEF"),
+            ("中性", "#A0AEC0"),
+            ("消极", "#6F82A0"),
+        ):
+            dot = QLabel("●")
+            dot.setStyleSheet(f"color: {color}; font-size: 11px;")
+            text = QLabel(label)
+            text.setStyleSheet("color: #A5B0C0; font-size: 11px;")
+            legend.addWidget(dot)
+            legend.addWidget(text)
+        legend.addStretch()
+        layout.addLayout(legend)
 
         self._plot = pg.PlotWidget()
         self._plot.setBackground(QColor("#1A1F2E"))

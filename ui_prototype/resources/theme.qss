@@ -455,6 +455,27 @@ QToolTip {
     font-size: 12px;
 }
 
+/* ---- 模态消息框：禁止回退到刺眼的系统浅色内容区 ---- */
+QMessageBox {
+    background-color: #151C28;
+}
+QMessageBox QLabel {
+    color: #E7ECF3;
+    font-size: 14px;
+    min-width: 280px;
+    padding: 6px 4px;
+}
+QMessageBox QPushButton {
+    min-width: 84px;
+    min-height: 34px;
+    background-color: #2563EB;
+    border: 1px solid #3975F0;
+    color: #FFFFFF;
+}
+QMessageBox QPushButton:hover {
+    background-color: #3474F4;
+}
+
 /* ---- 数字单色标签 ---- */
 QLabel#AccentLabel {
     color: #4FC3F7;
