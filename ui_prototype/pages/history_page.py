@@ -145,7 +145,7 @@ class HistoryPage(BasePage):
         for cls, color in [("positive", "#5B8DEF"), ("neutral", "#8EA3BF"), ("negative", "#6F82A0")]:
             row = QHBoxLayout()
             label = QLabel({"positive": "积极", "neutral": "中性", "negative": "消极"}[cls])
-            label.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: 600;")
+            label.setStyleSheet("color: #A5B0C0; font-size: 13px; font-weight: 600;")
             label.setFixedWidth(40)
             row.addWidget(label)
 
@@ -162,7 +162,7 @@ class HistoryPage(BasePage):
             row.addWidget(bar_frame, 1)
 
             val_label = QLabel("0%")
-            val_label.setStyleSheet(f"color: {color}; font-size: 13px;")
+            val_label.setStyleSheet("color: #E7ECF3; font-size: 13px;")
             val_label.setFixedWidth(50)
             row.addWidget(val_label)
 

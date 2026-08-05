@@ -56,12 +56,14 @@ class ProbabilityBar(QWidget):
         color = self.COLORS[self._class_name]
         if self._dimmed:
             color = QColor("#4A5263")
-        p.setPen(color)
+        # Category identity is encoded by the bar fill, not by text color.
+        # Keeping labels uniform prevents them looking like links/status alerts.
+        p.setPen(QColor("#778397") if self._dimmed else QColor("#A5B0C0"))
         label = self.LABELS[self._class_name]
         p.drawText(QRectF(0, 0, 60, 18), Qt.AlignLeft | Qt.AlignVCenter, label)
 
         # 数值
-        p.setPen(QColor("#8B95A7") if self._dimmed else QColor("#E0E6ED"))
+        p.setPen(QColor("#778397") if self._dimmed else QColor("#E7ECF3"))
         val_text = f"{self._value * 100:.1f}%"
         p.drawText(QRectF(60, 0, w - 60, 18), Qt.AlignRight | Qt.AlignVCenter, val_text)
 
