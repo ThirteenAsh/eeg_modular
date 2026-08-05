@@ -14,9 +14,10 @@ pg.setConfigOptions(antialias=True, useNumba=False)
 
 
 class EEGPlotWidget(QWidget):
-    """单通道EEG实时滚动曲线。"""
+    """Readable display-only view of the single-channel Raw EEG stream."""
 
-    MAX_POINTS = 768
+    DISPLAY_SECONDS = 5
+    DISPLAY_POINTS = 512
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -28,8 +29,9 @@ class EEGPlotWidget(QWidget):
         self._plot.showGrid(x=False, y=True, alpha=0.15)
         self._plot.setMouseEnabled(x=False, y=False)
         self._plot.hideButtons()
-        self._plot.setLabel("left", "振幅", color="#6B7689", **{"font-size": "10px"})
-        self._plot.setLabel("bottom", "时间", color="#6B7689", **{"font-size": "10px"})
+        self._plot.setLabel("left", "显示幅度（相对值）", color="#6B7689", **{"font-size": "10px"})
+        self._plot.setLabel("bottom", "最近5秒", color="#6B7689", **{"font-size": "10px"})
+        self._plot.setYRange(-250, 250, padding=0.02)
 
         # 坐标轴样式
         for axis_name in ["left", "bottom"]:
@@ -49,8 +51,9 @@ class EEGPlotWidget(QWidget):
 
         layout.addWidget(self._plot)
 
-        self._data = np.zeros(self.MAX_POINTS, dtype=np.float32)
-        self._x = np.arange(self.MAX_POINTS, dtype=np.float32)
+        self._data = np.zeros(self.DISPLAY_POINTS, dtype=np.float32)
+        self._x = np.linspace(-self.DISPLAY_SECONDS, 0, self.DISPLAY_POINTS)
+        self._scale = 250.0
 
     def push_value(self, value: float):
         self._data = np.roll(self._data, -1)
@@ -59,13 +62,24 @@ class EEGPlotWidget(QWidget):
 
     def push_buffer(self, buffer):
         """直接用 deque/list 替换全部数据。"""
-        arr = np.array(buffer, dtype=np.float32)
-        n = len(arr)
-        if n >= self.MAX_POINTS:
-            self._data = arr[-self.MAX_POINTS:]
-        else:
-            self._data = np.zeros(self.MAX_POINTS, dtype=np.float32)
-            self._data[-n:] = arr
+        arr = np.asarray(buffer, dtype=np.float32)[-(512 * self.DISPLAY_SECONDS):]
+        if not arr.size:
+            return
+        # Display processing only: remove DC offset and average adjacent Raw
+        # samples so a 512 Hz stream remains readable on a ~500 px chart.
+        arr = arr - float(np.median(arr))
+        block = max(1, int(np.ceil(arr.size / self.DISPLAY_POINTS)))
+        usable = (arr.size // block) * block
+        if usable:
+            arr = arr[-usable:].reshape(-1, block).mean(axis=1)
+        if arr.size > self.DISPLAY_POINTS:
+            arr = arr[-self.DISPLAY_POINTS:]
+        self._data = np.full(self.DISPLAY_POINTS, np.nan, dtype=np.float32)
+        self._data[-arr.size:] = arr
+        robust_peak = float(np.nanpercentile(np.abs(arr), 99)) if arr.size else 0.0
+        target_scale = float(np.clip(robust_peak * 1.25, 100.0, 1000.0))
+        self._scale = 0.90 * self._scale + 0.10 * target_scale
+        self._plot.setYRange(-self._scale, self._scale, padding=0.02)
         self._curve.setData(self._x, self._data)
 
     def set_dimmed(self, dimmed: bool):

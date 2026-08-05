@@ -283,6 +283,7 @@ class LiveDataService(QObject):
             self.state.attention = None
             self.state.meditation = None
             self.state.warmup_progress = 0.0
+            self.state._eeg_raw_buffer.clear()
             self.state.quality_level = "rejected"
             self.state.quality_reasons = [status.get("reason", "等待设备数据")]
         self.state.emit_update()
@@ -299,6 +300,7 @@ class LiveDataService(QObject):
             s._meditation_history.append(s.meditation)
         s.poor_signal = batch["poor_signal"]
         s.sample_rate_hz = SAMPLE_RATE if batch["raw_count"] else None
+        s._raw_sample_count = int(batch["raw_count"])
         s.warmup_progress = min(1.0, batch["buffer_samples"] / WINDOW_SAMPLES)
         self._update_quality()
         s.emit_update()

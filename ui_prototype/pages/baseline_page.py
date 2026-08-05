@@ -31,6 +31,7 @@ class BaselinePage(BasePage):
         self._att_values = []
         self._med_values = []
         self._poor_values = []
+        self._baseline_start_raw_count = 0
         super().__init__(
             "用户初始化与基线采集",
             "采集60～90秒静息态基线数据，用于个人校准和后续状态对比。"
@@ -161,9 +162,9 @@ class BaselinePage(BasePage):
         self._eeg_plot = EEGPlotWidget()
         self._eeg_plot.setMinimumHeight(220)
         eeg_card.add_widget(self._eeg_plot)
-        eeg_info = QLabel(f"目标采样率 {DEVICE_TARGET_SAMPLE_HZ} Hz · 当前未连接设备")
-        eeg_info.setStyleSheet("color: #6B7689; font-size: 12px;")
-        eeg_card.add_widget(eeg_info)
+        self._eeg_info = QLabel(f"目标采样率 {DEVICE_TARGET_SAMPLE_HZ} Hz · 等待设备数据")
+        self._eeg_info.setStyleSheet("color: #6B7689; font-size: 12px;")
+        eeg_card.add_widget(self._eeg_info)
         right.addWidget(eeg_card)
 
         # 基线统计预览
@@ -218,6 +219,7 @@ class BaselinePage(BasePage):
         self._att_values.clear()
         self._med_values.clear()
         self._poor_values.clear()
+        self._baseline_start_raw_count = int(getattr(self.state, "_raw_sample_count", 0))
         self._btn_start.setEnabled(False)
         self._btn_stop.setEnabled(True)
         self._btn_next.setEnabled(False)
@@ -261,6 +263,11 @@ class BaselinePage(BasePage):
         )
         if not self._baseline_active:
             self._btn_start.setEnabled(device_online)
+        self._eeg_info.setText(
+            f"实时设备 · {DEVICE_TARGET_SAMPLE_HZ} Hz · 显示降采样（不影响模型）"
+            if device_online else
+            f"目标采样率 {DEVICE_TARGET_SAMPLE_HZ} Hz · 等待设备数据"
+        )
 
         # 信号指示 — poor_signal 可能为 None
         poor = state.poor_signal
@@ -312,7 +319,12 @@ class BaselinePage(BasePage):
             self._label_time.setText(
                 f"已用时间：{int(elapsed)}秒 / {int(target)}秒"
             )
-            self._label_samples.setText(f"已采集样本：{len(self._att_values)}")
+            raw_samples = max(
+                0,
+                int(getattr(state, "_raw_sample_count", 0))
+                - self._baseline_start_raw_count,
+            )
+            self._label_samples.setText(f"已接收 Raw：{raw_samples}")
 
             qualified = sum(1 for p in self._poor_values if p < MAX_POOR_SIGNAL)
             qual_rate = qualified / len(self._poor_values) if self._poor_values else 0.0

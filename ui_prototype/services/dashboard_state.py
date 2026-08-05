@@ -138,7 +138,8 @@ class DashboardState(QObject):
         self.session_seconds = 0.0
 
         # 内部簿记
-        self._eeg_raw_buffer = deque(maxlen=768)
+        self._eeg_raw_buffer = deque(maxlen=512 * 5)
+        self._raw_sample_count = 0
         self._attention_history = deque(maxlen=900)
         self._meditation_history = deque(maxlen=900)
         self._prob_history = deque(maxlen=450)
