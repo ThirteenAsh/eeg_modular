@@ -7,7 +7,10 @@ DashboardState 正式字段接口。UI 业务逻辑只消费正式字段，
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QProgressBar, QInputDialog,
@@ -28,6 +31,9 @@ from services.dashboard_state import (
 
 
 class DashboardPage(BasePage):
+    request_navigation = Signal(str)
+    request_replay_file = Signal(str)
+
     def __init__(self, state, service):
         self.state = state
         self.service = service
@@ -208,22 +214,26 @@ class DashboardPage(BasePage):
 
         self._btn_pause = QPushButton("暂停记录")
         self._btn_pause.setEnabled(False)
+        self._btn_pause.setToolTip("开始学习记录后可暂停")
         self._btn_pause.clicked.connect(self._on_pause)
         btn_row.addWidget(self._btn_pause)
 
         self._btn_event = QPushButton("添加事件")
         self._btn_event.setEnabled(False)
+        self._btn_event.setToolTip("开始学习记录后可添加事件")
         self._btn_event.clicked.connect(self._on_event)
         btn_row.addWidget(self._btn_event)
 
         self._btn_end = QPushButton("结束并保存")
         self._btn_end.setObjectName("DangerButton")
         self._btn_end.setEnabled(False)
+        self._btn_end.setToolTip("开始学习记录后可结束并保存")
         self._btn_end.clicked.connect(self._on_end)
         btn_row.addWidget(self._btn_end)
 
         self._btn_export = QPushButton("导出报告")
         self._btn_export.setEnabled(False)
+        self._btn_export.setToolTip("结束并保存会话后可导出报告")
         self._btn_export.clicked.connect(self._on_export)
         btn_row.addWidget(self._btn_export)
 
@@ -260,6 +270,13 @@ class DashboardPage(BasePage):
     # ── 按钮事件 ──
 
     def _on_start(self):
+        if self.state.connector_status != "online" or self.state.device_status != "online":
+            QMessageBox.warning(
+                self, "设备尚未就绪",
+                "尚未收到MindWave实时数据。请启动ThinkGear Connector、正确佩戴设备，"
+                "并在“欢迎与设备检查”确认设备在线后重试。"
+            )
+            return
         self.state.reset_session()
         self.service.start_session()
         self._session_started = True
@@ -303,12 +320,24 @@ class DashboardPage(BasePage):
         self._btn_end.setEnabled(False)
         self._btn_export.setEnabled(True)
         self.state.add_event("会话结束", "system")
-        QMessageBox.information(
-            self, "会话结束",
-            f"会话已结束，时长 {self.state.session_seconds:.0f} 秒。\n"
-            + (f"综合CSV已保存至：\n{saved_path}\n" if saved_path else "未生成综合CSV，请查看诊断信息。\n")
-            + "可在“CSV回放”中直接加载该文件。"
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("会话已保存" if saved_path else "会话结束")
+        dialog.setIcon(QMessageBox.Information if saved_path else QMessageBox.Warning)
+        dialog.setText(f"本次学习记录已结束，共 {self.state.session_seconds:.0f} 秒。")
+        dialog.setInformativeText(
+            f"综合CSV：\n{saved_path}" if saved_path
+            else "未生成综合CSV，请前往“设置与诊断”查看运行状态。"
         )
+        open_folder = dialog.addButton("打开所在文件夹", QMessageBox.ActionRole)
+        replay = dialog.addButton("直接回放", QMessageBox.ActionRole)
+        dialog.addButton("完成", QMessageBox.AcceptRole)
+        open_folder.setEnabled(bool(saved_path))
+        replay.setEnabled(bool(saved_path))
+        dialog.exec()
+        if dialog.clickedButton() is open_folder and saved_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(saved_path).parent)))
+        elif dialog.clickedButton() is replay and saved_path:
+            self.request_replay_file.emit(saved_path)
 
     def _on_export(self):
         path, _ = QFileDialog.getSaveFileName(

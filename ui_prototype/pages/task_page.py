@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
-    QComboBox, QLineEdit, QSplitter,
+    QComboBox, QLineEdit, QSplitter, QMessageBox,
 )
 
 from pages.base_page import BasePage
@@ -204,6 +204,12 @@ class TaskPage(BasePage):
         return w
 
     def _on_task_start(self):
+        if not self.state._session_active:
+            QMessageBox.information(
+                self, "请先开始学习记录",
+                "任务标记必须关联到一次学习记录。请先在“实时仪表盘”点击“开始学习记录”。"
+            )
+            return
         self._task_start = time.time()
         self._task_active = True
         self._btn_task_start.setEnabled(False)

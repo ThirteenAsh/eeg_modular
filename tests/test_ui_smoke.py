@@ -128,6 +128,20 @@ class UISmokeTest(unittest.TestCase):
         # 回到dashboard
         self.window._navigate_to("dashboard")
 
+    def test_03b_visible_step_buttons_navigate(self):
+        """欢迎页和基线页的主要操作按钮必须有真实响应。"""
+        from main_window import MainWindow
+
+        if not hasattr(self, "window"):
+            self.window = MainWindow()
+        self.window._navigate_to("welcome")
+        self.window._pages["welcome"]._btn_start.click()
+        self.assertIs(self.window.stack.currentWidget(), self.window._pages["baseline"])
+
+        self.window._pages["baseline"]._btn_next.setEnabled(True)
+        self.window._pages["baseline"]._btn_next.click()
+        self.assertIs(self.window.stack.currentWidget(), self.window._pages["dashboard"])
+
     def test_04_state_update_signal(self):
         """测试DashboardState状态更新和信号发射。"""
         from services.dashboard_state import DashboardState

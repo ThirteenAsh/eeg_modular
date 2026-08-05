@@ -117,9 +117,14 @@ class WelcomePage(BasePage):
 
         self._btn_start = QPushButton("进入基线采集")
         self._btn_start.setObjectName("PrimaryButton")
+        self._btn_start.setToolTip("进入用户信息与静息基线采集页面")
         btn_layout.addWidget(self._btn_start)
 
         self.content_layout.addLayout(btn_layout)
+        self._next_hint = QLabel("设备在线后建议先完成60～90秒基线；也可先进入页面查看流程。")
+        self._next_hint.setAlignment(Qt.AlignRight)
+        self._next_hint.setStyleSheet("color: #8491A5; font-size: 12px;")
+        self.content_layout.addWidget(self._next_hint)
         self.content_layout.addStretch()
 
     def update_state(self, state):
@@ -166,3 +171,9 @@ class WelcomePage(BasePage):
             self._warmup_progress_label.setStyleSheet("font-size: 14px; color: #4ADE80;")
         else:
             self._warmup_progress_label.setText(f"预热进度：{pct:.0f}%")
+        if state.connector_status == "online" and state.device_status == "online":
+            self._next_hint.setText("设备与数据流已就绪，可以进入基线采集。")
+            self._next_hint.setStyleSheet("color: #4ADE80; font-size: 12px;")
+        else:
+            self._next_hint.setText("尚未检测到完整设备数据；可进入基线页查看，但暂不能开始采集。")
+            self._next_hint.setStyleSheet("color: #FBBF24; font-size: 12px;")

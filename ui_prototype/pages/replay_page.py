@@ -15,7 +15,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
     QPushButton, QFrame, QSlider, QFileDialog, QComboBox,
@@ -112,6 +113,10 @@ class ReplayPage(BasePage):
         self._btn_load.clicked.connect(self._load_file)
         control_layout.addWidget(self._btn_load)
 
+        self._btn_folder = QPushButton("打开会话文件夹")
+        self._btn_folder.clicked.connect(self._open_sessions_folder)
+        control_layout.addWidget(self._btn_folder)
+
         self._btn_sample = QPushButton("加载示例数据")
         self._btn_sample.clicked.connect(self._load_sample)
         control_layout.addWidget(self._btn_sample)
@@ -121,6 +126,7 @@ class ReplayPage(BasePage):
         self._btn_play = QPushButton("播放")
         self._btn_play.setObjectName("PrimaryButton")
         self._btn_play.setEnabled(False)
+        self._btn_play.setToolTip("请先加载包含Raw EEG的会话CSV")
         self._btn_play.clicked.connect(self._play)
         control_layout.addWidget(self._btn_play)
 
@@ -260,6 +266,10 @@ class ReplayPage(BasePage):
         )
         if not paths:
             return
+        self.load_paths(paths)
+
+    def load_paths(self, paths):
+        """Load one session or a sequence of compatible session CSV files."""
         try:
             combined = []
             missing_predictions = False
@@ -284,6 +294,11 @@ class ReplayPage(BasePage):
                 )
         except Exception as e:
             QMessageBox.warning(self, "加载失败", f"无法加载文件：{e}")
+
+    def _open_sessions_folder(self):
+        folder = Path(getattr(self.service, "sessions_dir", Path("data/sessions"))).resolve()
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     @staticmethod
     def _normalize_row(row: dict, source: str = "") -> dict:

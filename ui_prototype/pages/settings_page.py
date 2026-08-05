@@ -6,7 +6,9 @@ import os
 import platform
 from pathlib import Path
 
-from PySide6.QtWidgets import QGridLayout, QLabel, QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QGridLayout, QLabel, QHBoxLayout, QVBoxLayout, QWidget, QPushButton
 
 from pages.base_page import BasePage
 from services.dashboard_state import DEVICE_TARGET_SAMPLE_HZ, INFERENCE_INTERVAL, WARMUP_SECONDS
@@ -37,7 +39,7 @@ class SettingsPage(BasePage):
             key.setStyleSheet("color: #8FA0B8; font-size: 13px;")
             val = QLabel(str(value))
             val.setWordWrap(True)
-            val.setTextInteractionFlags(val.textInteractionFlags())
+            val.setTextInteractionFlags(Qt.TextSelectableByMouse)
             val.setStyleSheet("color: #E8EDF3; font-size: 13px;")
             layout.addWidget(key, index, 0)
             layout.addWidget(val, index, 1)
@@ -62,6 +64,9 @@ class SettingsPage(BasePage):
             ("隐私策略", "原始EEG仅在本机处理和保存"),
         ])
         connection.add_widget(self._wrap(grid))
+        open_folder = QPushButton("打开会话CSV文件夹")
+        open_folder.clicked.connect(self._open_sessions_folder)
+        connection.add_widget(open_folder)
         left.addWidget(connection)
 
         contract = Card("冻结分析契约（只读）")
@@ -138,6 +143,11 @@ class SettingsPage(BasePage):
         columns.addLayout(right, 2)
 
         self.content_layout.addLayout(columns)
+
+    def _open_sessions_folder(self):
+        folder = Path(getattr(self.service, "sessions_dir", Path("data/sessions"))).resolve()
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def update_state(self, state):
         connector = {"offline": "离线", "connecting": "连接中", "online": "在线"}

@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self._pages = {}
         self._build_pages()
+        self._connect_page_flows()
         right_layout.addWidget(self.stack, 1)
 
         # 状态栏
@@ -174,6 +175,21 @@ class MainWindow(QMainWindow):
             page = cls(self.state, self.service)
             self._pages[key] = page
             self.stack.addWidget(page)
+
+    def _connect_page_flows(self):
+        """Connect the visible step buttons to the same navigation used by the sidebar."""
+        self._pages["welcome"]._btn_start.clicked.connect(
+            lambda: self._navigate_to("baseline")
+        )
+        self._pages["baseline"]._btn_next.clicked.connect(
+            lambda: self._navigate_to("dashboard")
+        )
+        self._pages["dashboard"].request_navigation.connect(self._navigate_to)
+        self._pages["dashboard"].request_replay_file.connect(self._open_replay_file)
+
+    def _open_replay_file(self, path: str):
+        self._navigate_to("replay")
+        self._pages["replay"].load_paths([path])
 
     def _build_status_bar(self) -> QWidget:
         bar = QFrame()

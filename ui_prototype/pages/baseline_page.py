@@ -143,12 +143,14 @@ class BaselinePage(BasePage):
 
         self._btn_stop = QPushButton("结束采集")
         self._btn_stop.setEnabled(False)
+        self._btn_stop.setToolTip("基线采集中可提前结束")
         self._btn_stop.clicked.connect(self._stop_baseline)
         btn_layout.addWidget(self._btn_stop)
 
         self._btn_next = QPushButton("打开实时分析")
         self._btn_next.setObjectName("SuccessButton")
         self._btn_next.setEnabled(False)
+        self._btn_next.setToolTip("完成一次基线采集后可打开实时分析")
         btn_layout.addWidget(self._btn_next)
 
         left.addLayout(btn_layout)
@@ -263,6 +265,10 @@ class BaselinePage(BasePage):
         )
         if not self._baseline_active:
             self._btn_start.setEnabled(device_online)
+            self._btn_start.setToolTip(
+                "开始60～90秒静息基线采集" if device_online
+                else "需先连接ThinkGear Connector并收到MindWave Raw数据"
+            )
         self._eeg_info.setText(
             f"实时设备 · {DEVICE_TARGET_SAMPLE_HZ} Hz · 显示降采样（不影响模型）"
             if device_online else

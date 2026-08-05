@@ -6,8 +6,8 @@ UI 只消费 DashboardState 的正式字段与内部簿记字段 _history_sessio
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
@@ -81,10 +81,15 @@ class HistoryPage(BasePage):
         table_card.add_widget(self._wrap(table_layout))
         left_layout.addWidget(table_card, 1)
 
-        # 导出按钮
-        btn_export = QPushButton("导出全部记录 (CSV)")
+        # 数据操作
+        actions = QHBoxLayout()
+        btn_folder = QPushButton("打开真实会话文件夹")
+        btn_folder.clicked.connect(self._open_sessions_folder)
+        actions.addWidget(btn_folder)
+        btn_export = QPushButton("导出演示记录 (CSV)")
         btn_export.clicked.connect(self._export_all)
-        left_layout.addWidget(btn_export)
+        actions.addWidget(btn_export)
+        left_layout.addLayout(actions)
 
         splitter.addWidget(left)
 
@@ -300,6 +305,12 @@ class HistoryPage(BasePage):
             self, "导出成功",
             f"已导出 {len(self.state._history_sessions)} 条记录。"
         )
+
+    def _open_sessions_folder(self):
+        from pathlib import Path
+        folder = Path(getattr(self.service, "sessions_dir", Path("data/sessions"))).resolve()
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def on_show(self):
         self._refresh_table()
