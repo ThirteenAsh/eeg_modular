@@ -60,9 +60,8 @@ NAV_ITEMS = [
 class MainWindow(QMainWindow):
     """主窗口。"""
 
-    def __init__(self, service_factory=None):
+    def __init__(self):
         super().__init__()
-        self._is_live_service = service_factory is not None
         ensure_chinese_font()
         self.setWindowTitle("智学脑机助手 - 单通道脑机接口学习状态辅助系统")
         self.resize(1920, 1080)
@@ -70,10 +69,7 @@ class MainWindow(QMainWindow):
 
         # ── 核心状态与服务 ──
         self.state = DashboardState()
-        self.service = (
-            service_factory(self.state) if service_factory is not None
-            else MockDataService(self.state)
-        )
+        self.service = MockDataService(self.state)
         self.service.start_streaming()
 
         # ── UI 构建 ──
@@ -98,7 +94,6 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self._pages = {}
         self._build_pages()
-        self._connect_page_flows()
         right_layout.addWidget(self.stack, 1)
 
         # 状态栏
@@ -151,10 +146,7 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         # 底部版本信息（明确标注 Mock 演示数据）
-        version = QLabel(
-            "v1.0.0  ·  实时设备" if self._is_live_service
-            else "v1.0.0  ·  界面预览"
-        )
+        version = QLabel("v1.0.0  |  Mock模式 - 演示数据")
         version.setObjectName("AppSubtitle")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
@@ -175,21 +167,6 @@ class MainWindow(QMainWindow):
             page = cls(self.state, self.service)
             self._pages[key] = page
             self.stack.addWidget(page)
-
-    def _connect_page_flows(self):
-        """Connect the visible step buttons to the same navigation used by the sidebar."""
-        self._pages["welcome"]._btn_start.clicked.connect(
-            lambda: self._navigate_to("baseline")
-        )
-        self._pages["baseline"]._btn_next.clicked.connect(
-            lambda: self._navigate_to("dashboard")
-        )
-        self._pages["dashboard"].request_navigation.connect(self._navigate_to)
-        self._pages["dashboard"].request_replay_file.connect(self._open_replay_file)
-
-    def _open_replay_file(self, path: str):
-        self._navigate_to("replay")
-        self._pages["replay"].load_paths([path])
 
     def _build_status_bar(self) -> QWidget:
         bar = QFrame()
@@ -255,7 +232,7 @@ class MainWindow(QMainWindow):
             self._sb_connector.setStyleSheet("color: #FBBF24; font-size: 12px;")
         else:  # offline（Mock 模式即在此分支）
             self._sb_connector.setText("ThinkGear Connector: 未连接")
-            self._sb_connector.setStyleSheet("color: #7F8B9D; font-size: 12px;")
+            self._sb_connector.setStyleSheet("color: #F87171; font-size: 12px;")
 
         # ── Device 状态：offline | waiting_raw | online ──
         ds = s.device_status
@@ -267,7 +244,7 @@ class MainWindow(QMainWindow):
             self._sb_device.setStyleSheet("color: #FBBF24; font-size: 12px;")
         else:  # offline（Mock 模式即在此分支）
             self._sb_device.setText("MindWave: 离线")
-            self._sb_device.setStyleSheet("color: #7F8B9D; font-size: 12px;")
+            self._sb_device.setStyleSheet("color: #F87171; font-size: 12px;")
 
         # ── 信号质量：poor_signal (int | None) + quality_level ──
         poor = s.poor_signal
@@ -300,11 +277,8 @@ class MainWindow(QMainWindow):
         # ── 模式：live | replay（mock 模式由采集线程报告为 "mock"）──
         mode = s.mode
         if mode == "live":
-            self._sb_mode.setText(
-                "模式: 实时设备" if self._is_live_service
-                else "模式: 界面预览 · 无设备数据"
-            )
-            self._sb_mode.setStyleSheet("color: #7F8B9D; font-size: 12px;")
+            self._sb_mode.setText(f"模式: 实时演示 · Mock {MOCK_UI_REFRESH_HZ}Hz刷新")
+            self._sb_mode.setStyleSheet("color: #FBBF24; font-size: 12px;")
         elif mode == "replay":
             self._sb_mode.setText("模式: 回放")
             self._sb_mode.setStyleSheet("color: #60A5FA; font-size: 12px;")

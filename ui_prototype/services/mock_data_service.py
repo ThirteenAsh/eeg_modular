@@ -109,18 +109,10 @@ class MockDataService(QObject):
         device_online = (
             s.device_status == "online" and s.connector_status == "online"
         )
-        if not device_online:
-            # Live/offline means no measurement. Mock snapshots are internal
-            # traffic and must never leak into a live device screen.
+        if device_online:
+            s.poor_signal = snap.poor_signal
+        else:
             s.poor_signal = None
-            s.attention = None
-            s.meditation = None
-            s._eeg_raw_buffer.clear()
-            s._attention_history.clear()
-            s._meditation_history.clear()
-            return
-
-        s.poor_signal = snap.poor_signal
 
         s.attention = float(snap.attention)
         s.meditation = float(snap.meditation)
@@ -151,11 +143,6 @@ class MockDataService(QObject):
         # 设备离线时：清空 poor_signal，强制标记质量为 rejected
         if s.device_status != "online" or s.connector_status != "online":
             s.poor_signal = None
-            s.attention = None
-            s.meditation = None
-            s._eeg_raw_buffer.clear()
-            s._attention_history.clear()
-            s._meditation_history.clear()
             s.quality_level = "rejected"
             s.quality_reasons = ["设备未连接"]
 
@@ -199,10 +186,7 @@ class MockDataService(QObject):
         s = self.state
 
         # 预热进度
-        device_online = (
-            s.device_status == "online" and s.connector_status == "online"
-        )
-        if self._warmup_running and device_online and not s.warmup_complete:
+        if self._warmup_running and not s.warmup_complete:
             elapsed = s.warmup_progress * WARMUP_SECONDS + dt
             s.warmup_progress = min(1.0, elapsed / WARMUP_SECONDS)
 
@@ -212,6 +196,9 @@ class MockDataService(QObject):
 
         # 质量等级重算（仅在设备在线时执行，离线时保持"设备未连接"原因）
         s = self.state
+        device_online = (
+            s.device_status == "online" and s.connector_status == "online"
+        )
         if device_online:
             quality_level, quality_reasons = compute_quality(
                 s.poor_signal, s.warmup_progress

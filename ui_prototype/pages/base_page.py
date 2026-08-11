@@ -56,18 +56,12 @@ class BasePage(QWidget):
         # 内容容器（可选滚动区域）
         if scrollable:
             self._scroll_area = QScrollArea()
-            self._scroll_area.setObjectName("PageScrollArea")
             self._scroll_area.setWidgetResizable(True)
             self._scroll_area.setFrameShape(QFrame.NoFrame)
             self._scroll_area.setStyleSheet(
-                "QScrollArea#PageScrollArea { border: none; background-color: #1A1F2E; }"
-                "QScrollArea#PageScrollArea > QWidget > QWidget { background-color: #1A1F2E; }"
+                "QScrollArea { border: none; background: transparent; }"
             )
-            self._scroll_area.viewport().setObjectName("PageScrollViewport")
-            self._scroll_area.viewport().setStyleSheet("background-color: #1A1F2E;")
             self._content = QWidget()
-            self._content.setObjectName("PageScrollContent")
-            self._content.setStyleSheet("background-color: #1A1F2E;")
             self._content_layout = QVBoxLayout(self._content)
             self._content_layout.setContentsMargins(0, 0, 0, 0)
             self._content_layout.setSpacing(14)

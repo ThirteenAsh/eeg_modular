@@ -7,10 +7,7 @@ DashboardState 正式字段接口。UI 业务逻辑只消费正式字段，
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QProgressBar, QInputDialog,
@@ -31,9 +28,6 @@ from services.dashboard_state import (
 
 
 class DashboardPage(BasePage):
-    request_navigation = Signal(str)
-    request_replay_file = Signal(str)
-
     def __init__(self, state, service):
         self.state = state
         self.service = service
@@ -99,8 +93,7 @@ class DashboardPage(BasePage):
         warmup_h.addWidget(self._warmup_label)
 
         warmup_card.add_widget(self._wrap(warmup_h))
-        warmup_card.setMinimumHeight(78)
-        warmup_card.setMaximumHeight(82)
+        warmup_card.setMaximumHeight(64)
         layout.addWidget(warmup_card)
 
         # ── 第三行：左 EEG + 趋势 | 右 概率 + 持续状态 ──
@@ -147,13 +140,13 @@ class DashboardPage(BasePage):
         gauge_row.setSpacing(8)
 
         att_card = Card("Attention")
-        self._att_gauge = ArcGauge("Attention", "#5B8DEF")
+        self._att_gauge = ArcGauge("Attention", "#4FC3F7")
         self._att_gauge.setFixedSize(72, 72)
         att_card.add_widget(self._wrap_centered(self._att_gauge))
         gauge_row.addWidget(att_card, 1)
 
         med_card = Card("Meditation")
-        self._med_gauge = ArcGauge("Meditation", "#8EA3BF")
+        self._med_gauge = ArcGauge("Meditation", "#4ADE80")
         self._med_gauge.setFixedSize(72, 72)
         med_card.add_widget(self._wrap_centered(self._med_gauge))
         gauge_row.addWidget(med_card, 1)
@@ -165,13 +158,13 @@ class DashboardPage(BasePage):
         sustain_layout = QVBoxLayout()
         sustain_layout.setSpacing(6)
 
-        self._sustain_label = QLabel("最近90秒主导状态（有效预测众数）：--")
+        self._sustain_label = QLabel("主导状态：--")
         self._sustain_label.setObjectName("CardValueSmall")
         self._sustain_label.setStyleSheet("font-size: 16px; font-weight: bold;")
         sustain_layout.addWidget(self._sustain_label)
 
         self._sustain_neg = QLabel("消极持续：0.0秒")
-        self._sustain_neg.setStyleSheet("color: #9AA8BB; font-size: 13px;")
+        self._sustain_neg.setStyleSheet("color: #F87171; font-size: 13px;")
         sustain_layout.addWidget(self._sustain_neg)
 
         self._intervention_label = QLabel()
@@ -199,41 +192,36 @@ class DashboardPage(BasePage):
         self._ai_label.setWordWrap(True)
         self._ai_label.setStyleSheet("color: #C5CDD9; font-size: 14px;")
         ai_card.add_widget(self._ai_label)
-        ai_card.setMinimumHeight(64)
-        ai_card.setMaximumHeight(72)
+        ai_card.setMaximumHeight(52)
         layout.addWidget(ai_card)
 
         # ── 控制按钮 ──
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
 
-        self._btn_start = QPushButton("开始学习记录")
+        self._btn_start = QPushButton("开始会话")
         self._btn_start.setObjectName("PrimaryButton")
         self._btn_start.clicked.connect(self._on_start)
         btn_row.addWidget(self._btn_start)
 
-        self._btn_pause = QPushButton("暂停记录")
+        self._btn_pause = QPushButton("暂停")
         self._btn_pause.setEnabled(False)
-        self._btn_pause.setToolTip("开始学习记录后可暂停")
         self._btn_pause.clicked.connect(self._on_pause)
         btn_row.addWidget(self._btn_pause)
 
-        self._btn_event = QPushButton("添加事件")
+        self._btn_event = QPushButton("事件标记")
         self._btn_event.setEnabled(False)
-        self._btn_event.setToolTip("开始学习记录后可添加事件")
         self._btn_event.clicked.connect(self._on_event)
         btn_row.addWidget(self._btn_event)
 
-        self._btn_end = QPushButton("结束并保存")
+        self._btn_end = QPushButton("结束会话")
         self._btn_end.setObjectName("DangerButton")
         self._btn_end.setEnabled(False)
-        self._btn_end.setToolTip("开始学习记录后可结束并保存")
         self._btn_end.clicked.connect(self._on_end)
         btn_row.addWidget(self._btn_end)
 
         self._btn_export = QPushButton("导出报告")
         self._btn_export.setEnabled(False)
-        self._btn_export.setToolTip("结束并保存会话后可导出报告")
         self._btn_export.clicked.connect(self._on_export)
         btn_row.addWidget(self._btn_export)
 
@@ -249,8 +237,7 @@ class DashboardPage(BasePage):
         ind = StatusIndicator()
         card.add_widget(val)
         card.add_widget(ind)
-        card.setMinimumHeight(94)
-        card.setMaximumHeight(100)
+        card.setMaximumHeight(72)
         return {"frame": card, "value": val, "indicator": ind}
 
     def _wrap(self, layout) -> QWidget:
@@ -270,13 +257,6 @@ class DashboardPage(BasePage):
     # ── 按钮事件 ──
 
     def _on_start(self):
-        if self.state.connector_status != "online" or self.state.device_status != "online":
-            QMessageBox.warning(
-                self, "设备尚未就绪",
-                "尚未收到MindWave实时数据。请启动ThinkGear Connector、正确佩戴设备，"
-                "并在“欢迎与设备检查”确认设备在线后重试。"
-            )
-            return
         self.state.reset_session()
         self.service.start_session()
         self._session_started = True
@@ -311,7 +291,7 @@ class DashboardPage(BasePage):
             self.state.add_event(text, "user")
 
     def _on_end(self):
-        saved_path = self.service.end_session()
+        self.service.end_session()
         self._session_started = False
         self._btn_start.setEnabled(True)
         self._btn_pause.setEnabled(False)
@@ -320,24 +300,10 @@ class DashboardPage(BasePage):
         self._btn_end.setEnabled(False)
         self._btn_export.setEnabled(True)
         self.state.add_event("会话结束", "system")
-        dialog = QMessageBox(self)
-        dialog.setWindowTitle("会话已保存" if saved_path else "会话结束")
-        dialog.setIcon(QMessageBox.Information if saved_path else QMessageBox.Warning)
-        dialog.setText(f"本次学习记录已结束，共 {self.state.session_seconds:.0f} 秒。")
-        dialog.setInformativeText(
-            f"综合CSV：\n{saved_path}" if saved_path
-            else "未生成综合CSV，请前往“设置与诊断”查看运行状态。"
+        QMessageBox.information(
+            self, "会话结束",
+            f"会话已结束，时长 {self.state.session_seconds:.0f} 秒。可导出报告。"
         )
-        open_folder = dialog.addButton("打开所在文件夹", QMessageBox.ActionRole)
-        replay = dialog.addButton("直接回放", QMessageBox.ActionRole)
-        dialog.addButton("完成", QMessageBox.AcceptRole)
-        open_folder.setEnabled(bool(saved_path))
-        replay.setEnabled(bool(saved_path))
-        dialog.exec()
-        if dialog.clickedButton() is open_folder and saved_path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(saved_path).parent)))
-        elif dialog.clickedButton() is replay and saved_path:
-            self.request_replay_file.emit(saved_path)
 
     def _on_export(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -388,7 +354,7 @@ class DashboardPage(BasePage):
             self._card_connector["indicator"].set_state(StatusIndicator.LEVEL_WARN, "连接中")
         else:
             self._card_connector["value"].setText("未连接")
-            self._card_connector["indicator"].set_state(StatusIndicator.LEVEL_NEUTRAL, "离线")
+            self._card_connector["indicator"].set_state(StatusIndicator.LEVEL_ERROR, "离线")
 
         # Device 卡片：使用 device_status
         if s.device_status == "online":
@@ -399,7 +365,7 @@ class DashboardPage(BasePage):
             self._card_device["indicator"].set_state(StatusIndicator.LEVEL_WARN, "等待")
         else:
             self._card_device["value"].setText("离线")
-            self._card_device["indicator"].set_state(StatusIndicator.LEVEL_NEUTRAL, "离线")
+            self._card_device["indicator"].set_state(StatusIndicator.LEVEL_ERROR, "离线")
 
         # Poor Signal 卡片：poor_signal 可能为 None
         poor = s.poor_signal
@@ -424,7 +390,7 @@ class DashboardPage(BasePage):
         if is_device_offline:
             self._card_conf["value"].setText("不可评估")
             self._card_conf["indicator"].set_state(
-                StatusIndicator.LEVEL_NEUTRAL, "设备未连接"
+                StatusIndicator.LEVEL_ERROR, "设备未连接"
             )
         elif ql == "trusted":
             self._card_conf["value"].setText("可信")
@@ -433,17 +399,17 @@ class DashboardPage(BasePage):
             self._card_conf["value"].setText("警告")
             self._card_conf["indicator"].set_state(StatusIndicator.LEVEL_WARN, "警告")
         else:  # rejected
-            self._card_conf["value"].setText("暂不可用")
-            self._card_conf["indicator"].set_state(StatusIndicator.LEVEL_NEUTRAL, "请检查信号")
+            self._card_conf["value"].setText("不合格")
+            self._card_conf["indicator"].set_state(StatusIndicator.LEVEL_ERROR, "不合格")
         # quality_reasons 作为 tooltip 展示
         reasons_text = "、".join(s.quality_reasons) if s.quality_reasons else ""
         self._card_conf["value"].setToolTip(reasons_text)
         self._card_conf["indicator"].setToolTip(reasons_text)
 
         # 采样率卡片：使用常量展示，不使用 sample_rate_hz（Mock 模式下为 None）
-        self._card_rate["value"].setText(f"{DEVICE_TARGET_SAMPLE_HZ} Hz")
+        self._card_rate["value"].setText(f"设备目标: {DEVICE_TARGET_SAMPLE_HZ}Hz")
         self._card_rate["indicator"].set_state(
-            StatusIndicator.LEVEL_NEUTRAL, "设备目标采样率"
+            StatusIndicator.LEVEL_NEUTRAL, f"Mock刷新: {MOCK_UI_REFRESH_HZ}Hz"
         )
 
         # ── 预热进度：使用 warmup_progress（0.0~1.0）──
@@ -499,7 +465,7 @@ class DashboardPage(BasePage):
         # ── 持续状态：使用 stable_state ──
         if s.inference_eligible:
             display = CLASS_DISPLAY.get(s.stable_state, "--")
-            self._sustain_label.setText(f"最近90秒主导状态（有效预测众数）：{display}")
+            self._sustain_label.setText(f"主导状态：{display}")
             color_map = {
                 "positive": "#4ADE80",
                 "neutral": "#4FC3F7",
@@ -510,7 +476,7 @@ class DashboardPage(BasePage):
                 f"font-size: 16px; font-weight: bold; color: {color_map.get(s.stable_state, '#6B7689')};"
             )
         else:
-            self._sustain_label.setText("最近90秒主导状态（有效预测众数）：--")
+            self._sustain_label.setText("主导状态：--")
             self._sustain_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #6B7689;")
 
         # 消极持续：使用内部簿记 _negative_sustain_seconds
